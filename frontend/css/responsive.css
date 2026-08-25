@@ -1,0 +1,178 @@
+/**
+ * APERTURE - Responsive Styles
+ * Mobile-first with breakpoints for tablet and desktop.
+ */
+
+/* Mobile (default): single column, bottom nav, conversation list fills screen */
+@media (max-width: 767.98px) {
+  .chat-shell {
+    flex-direction: column;
+    position: relative;
+    min-height: calc(100vh - var(--aperture-topbar-h) - var(--aperture-bottomnav-h));
+    height: calc(100vh - var(--aperture-topbar-h) - var(--aperture-bottomnav-h));
+    max-height: calc(100vh - var(--aperture-topbar-h) - var(--aperture-bottomnav-h));
+    overflow: hidden;
+  }
+
+  .conversation-list-panel {
+    flex: 0 0 100%;
+    width: 100%;
+    transition: transform 0.25s ease;
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 1;
+  }
+
+  .chat-shell.has-active-conversation .conversation-list-panel {
+    transform: translateX(-100%);
+  }
+
+  .chat-area {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 2;
+    transform: translateX(100%);
+    transition: transform 0.25s ease;
+  }
+
+  .chat-shell.has-active-conversation .chat-area {
+    transform: translateX(0);
+  }
+
+  .chat-shell.has-active-conversation .chat-empty-state {
+    display: none;
+  }
+
+  .chat-area .chat-empty-state {
+    width: 100%;
+  }
+
+  /* Show back button on mobile when in a conversation */
+  .chat-header .chat-back-btn {
+    display: flex !important;
+  }
+}
+
+/* Tablet: two-column chat layout */
+@media (min-width: 768px) {
+  .conversation-list-panel {
+    flex: 0 0 320px;
+    width: 320px;
+    position: relative;
+    transform: none;
+    z-index: 1;
+    height: calc(100vh - var(--aperture-topbar-h) - var(--aperture-bottomnav-h));
+    max-height: calc(100vh - var(--aperture-topbar-h) - var(--aperture-bottomnav-h));
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    transition: none;
+    top: auto;
+    left: auto;
+    right: auto;
+    bottom: auto;
+  }
+
+  .chat-area {
+    position: relative;
+    transform: none;
+    transition: none;
+    top: auto;
+    left: auto;
+    right: auto;
+    bottom: auto;
+  }
+
+  .chat-shell {
+    height: calc(100vh - var(--aperture-topbar-h) - var(--aperture-bottomnav-h));
+    max-height: calc(100vh - var(--aperture-topbar-h) - var(--aperture-bottomnav-h));
+    overflow: hidden;
+  }
+
+  .chat-header .chat-back-btn {
+    display: none !important;
+  }
+
+  .conversation-list-panel .conversation-list {
+    overflow-y: auto;
+  }
+}
+
+/* Desktop: wider conversation list, side-by-side layout */
+@media (min-width: 992px) {
+  .conversation-list-panel {
+    flex: 0 0 360px;
+    width: 360px;
+  }
+
+  .app-main {
+    max-width: 100%;
+  }
+
+  .bottomnav-label {
+    display: inline;
+  }
+
+  .app-bottomnav {
+    width: 100%;
+    max-width: 100%;
+    margin: 0;
+    border-radius: 0;
+  }
+}
+
+/* Large desktop */
+@media (min-width: 1200px) {
+  #app {
+    max-width: 1200px;
+    margin: 0 auto;
+    box-shadow: var(--aperture-shadow-lg);
+  }
+}
+
+/* Small phones */
+@media (max-width: 360px) {
+  .app-brand-text {
+    display: none;
+  }
+
+  .bottomnav-label {
+    font-size: 0.65rem;
+  }
+
+  .call-actions {
+    gap: 1.5rem;
+  }
+}
+
+/* Landscape mobile */
+@media (max-height: 500px) and (orientation: landscape) {
+  .assist-page {
+    min-height: auto;
+  }
+
+  .assist-state-display {
+    padding: 0.75rem;
+  }
+
+  .assist-mic-btn {
+    width: 64px;
+    height: 64px;
+    font-size: 1.5rem;
+  }
+}
+
+/* Print */
+@media print {
+  .app-topbar,
+  .app-bottomnav,
+  .message-composer {
+    display: none;
+  }
+}

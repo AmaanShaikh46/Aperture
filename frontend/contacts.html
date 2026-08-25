@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/aperture.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0d6efd" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="stylesheet" href="/node_modules/bootstrap/dist/css/bootstrap.min.css" />
+    <link rel="stylesheet" href="/node_modules/bootstrap-icons/font/bootstrap-icons.css" />
+    <link rel="stylesheet" href="/css/bootstrap-overrides.css" />
+    <link rel="stylesheet" href="/css/app.css" />
+    <link rel="stylesheet" href="/css/responsive.css" />
+    <title>Contacts — APERTURE</title>
+  </head>
+  <body>
+    <div id="app">
+      <header class="app-topbar" role="banner">
+        <div class="app-topbar-left">
+          <a href="app.html" class="btn btn-sm btn-link p-0 text-decoration-none" aria-label="Back">
+            <i class="bi bi-arrow-left"></i>
+          </a>
+        </div>
+        <div class="app-topbar-center">Contacts</div>
+        <div class="app-topbar-right"></div>
+      </header>
+      <main class="app-main" id="app-main" role="main"></main>
+    </div>
+    <script type="module">
+      import { initContactsPage } from './js/pages/contacts-page.js';
+      import { initTheme } from './js/utils.js';
+      initTheme();
+      initContactsPage(document.getElementById('app-main'));
+    </script>
+  </body>
+</html>

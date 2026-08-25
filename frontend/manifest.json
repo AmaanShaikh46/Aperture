@@ -1,0 +1,21 @@
+{
+  "name": "APERTURE",
+  "short_name": "Aperture",
+  "description": "AI-enabled real-time communication platform",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f8f9fa",
+  "theme_color": "#0d6efd",
+  "icons": [
+    {
+      "src": "/aperture.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["communication", "productivity"],
+  "lang": "en",
+  "scope": "/"
+}

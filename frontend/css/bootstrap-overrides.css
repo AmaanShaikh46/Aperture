@@ -1,0 +1,183 @@
+/**
+ * APERTURE - Bootstrap 5 Overrides
+ * Customizes Bootstrap variables and component styles for Aperture's identity.
+ */
+
+:root {
+  /* Aperture brand colors */
+  --aperture-primary: #0d6efd;
+  --aperture-primary-dark: #0b5ed7;
+  --aperture-accent: #0d9488;
+  --aperture-bg: #f8f9fa;
+  --aperture-surface: #ffffff;
+  --aperture-border: #dee2e6;
+  --aperture-text: #1a1a1a;
+  --aperture-text-muted: #6c757d;
+  --aperture-topbar-h: 56px;
+  --aperture-bottomnav-h: 60px;
+  --aperture-radius: 12px;
+  --aperture-radius-sm: 8px;
+  --aperture-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08);
+  --aperture-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  --aperture-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.15);
+  --aperture-transition: 0.2s ease;
+}
+
+[data-bs-theme="dark"] {
+  --aperture-bg: #0f1115;
+  --aperture-surface: #1a1d24;
+  --aperture-border: #2a2e36;
+  --aperture-text: #e8eaed;
+  --aperture-text-muted: #9aa0a6;
+  --aperture-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --aperture-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  --aperture-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+/* Base typography */
+body {
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  background-color: var(--aperture-bg);
+  color: var(--aperture-text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* Buttons — larger touch targets */
+.btn {
+  border-radius: var(--aperture-radius-sm);
+  font-weight: 500;
+  min-height: 40px;
+}
+
+.btn-sm {
+  min-height: 32px;
+}
+
+.btn-lg {
+  min-height: 48px;
+}
+
+/* Cards */
+.card {
+  border-radius: var(--aperture-radius);
+  border-color: var(--aperture-border);
+  box-shadow: var(--aperture-shadow-sm);
+}
+
+/* Forms */
+.form-control,
+.form-select {
+  border-radius: var(--aperture-radius-sm);
+  border-color: var(--aperture-border);
+  background-color: var(--aperture-surface);
+  color: var(--aperture-text);
+  min-height: 44px;
+}
+
+.form-control:focus,
+.form-select:focus {
+  border-color: var(--aperture-primary);
+  box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.15);
+}
+
+.form-control::placeholder {
+  color: var(--aperture-text-muted);
+}
+
+/* Input group */
+.input-group-text {
+  border-radius: var(--aperture-radius-sm);
+  border-color: var(--aperture-border);
+  background-color: var(--aperture-surface);
+  color: var(--aperture-text-muted);
+}
+
+/* Badges */
+.badge {
+  font-weight: 500;
+  border-radius: 6px;
+}
+
+/* Nav tabs */
+.nav-tabs {
+  border-bottom-color: var(--aperture-border);
+}
+
+.nav-tabs .nav-link {
+  color: var(--aperture-text-muted);
+  border-radius: 0;
+  border: none;
+  padding: 0.6rem 1rem;
+}
+
+.nav-tabs .nav-link:hover {
+  color: var(--aperture-text);
+}
+
+.nav-tabs .nav-link.active {
+  color: var(--aperture-primary);
+  background-color: transparent;
+  border-bottom: 2px solid var(--aperture-primary);
+}
+
+/* Modals */
+.modal-content {
+  border-radius: var(--aperture-radius);
+  border: none;
+  box-shadow: var(--aperture-shadow-lg);
+}
+
+/* Toasts */
+.toast {
+  border-radius: var(--aperture-radius-sm);
+}
+
+/* Switches */
+.form-switch .form-check-input {
+  width: 2.5em;
+  height: 1.4em;
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--aperture-border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--aperture-text-muted);
+}
+
+/* Focus visibility */
+*:focus-visible {
+  outline: 2px solid var(--aperture-primary);
+  outline-offset: 2px;
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

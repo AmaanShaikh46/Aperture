@@ -1,0 +1,306 @@
+/**
+ * APERTURE - Assist Page Styles
+ * Accessibility-first voice interface with large touch targets and clear state indicators.
+ */
+
+.assist-page {
+  padding: 1rem;
+  max-width: 500px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  min-height: calc(100vh - var(--aperture-topbar-h) - var(--aperture-bottomnav-h));
+}
+
+.assist-header {
+  text-align: center;
+  padding-top: 0.5rem;
+}
+
+/* Mode toggle */
+.assist-mode-toggle .btn-group {
+  max-width: 300px;
+  margin: 0 auto;
+}
+
+.assist-mode-toggle .btn {
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+/* State display */
+.assist-state-display {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  border-radius: var(--aperture-radius);
+  background-color: var(--aperture-surface);
+  box-shadow: var(--aperture-shadow-sm);
+  text-align: center;
+  transition: background-color var(--aperture-transition);
+}
+
+.assist-state-icon {
+  font-size: 3rem;
+  margin-bottom: 0.5rem;
+  transition: color var(--aperture-transition);
+}
+
+.assist-state-label {
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.assist-state-desc {
+  font-size: 0.9rem;
+  color: var(--aperture-text-muted);
+  margin-top: 0.25rem;
+}
+
+/* State-specific colors */
+.state-idle .assist-state-icon { color: var(--aperture-text-muted); }
+.state-listening .assist-state-icon { color: #ef4444; animation: assist-pulse 1.5s infinite; }
+.state-processing .assist-state-icon { color: #f59e0b; }
+.state-understanding .assist-state-icon { color: #8b5cf6; }
+.state-checking_contact .assist-state-icon { color: #0ea5e9; }
+.state-confirming .assist-state-icon { color: #f59e0b; }
+.state-executing .assist-state-icon { color: var(--aperture-primary); }
+.state-success .assist-state-icon { color: #22c55e; }
+.state-retry .assist-state-icon { color: #f59e0b; }
+.state-cancelled .assist-state-icon { color: var(--aperture-text-muted); }
+.state-error .assist-state-icon { color: #ef4444; }
+
+@keyframes assist-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.15); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .state-listening .assist-state-icon { animation: none; }
+}
+
+/* Mic button */
+.assist-mic-control {
+  display: flex;
+  justify-content: center;
+  padding: 1rem 0;
+}
+
+.assist-mic-btn {
+  width: 88px;
+  height: 88px;
+  border-radius: 50%;
+  border: none;
+  background-color: var(--aperture-primary);
+  color: #fff;
+  font-size: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform var(--aperture-transition), background-color var(--aperture-transition);
+  box-shadow: var(--aperture-shadow);
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.assist-mic-btn:hover {
+  background-color: var(--aperture-primary-dark);
+}
+
+.assist-mic-btn.listening {
+  background-color: #ef4444;
+  transform: scale(1.1);
+  animation: mic-listening-pulse 1.5s infinite;
+}
+
+@keyframes mic-listening-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+  50% { box-shadow: 0 0 0 16px rgba(239, 68, 68, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .assist-mic-btn.listening { animation: none; transform: none; }
+}
+
+.assist-mic-btn:focus-visible {
+  outline: 3px solid var(--aperture-primary);
+  outline-offset: 4px;
+}
+
+/* Transcript */
+.assist-transcript {
+  background-color: var(--aperture-surface);
+  border-radius: var(--aperture-radius);
+  padding: 1rem;
+  box-shadow: var(--aperture-shadow-sm);
+}
+
+.transcript-section {
+  margin-bottom: 1rem;
+}
+
+.transcript-section:last-child {
+  margin-bottom: 0;
+}
+
+.transcript-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--aperture-text-muted);
+  margin-bottom: 0.4rem;
+}
+
+.transcript-content {
+  font-size: 1rem;
+  font-style: italic;
+  color: var(--aperture-text);
+}
+
+.interpretation-content {
+  font-size: 0.95rem;
+}
+
+.interpretation-row {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.3rem 0;
+  border-bottom: 1px solid var(--aperture-border);
+}
+
+.interpretation-row:last-child {
+  border-bottom: none;
+}
+
+.interp-label {
+  font-weight: 600;
+  color: var(--aperture-text-muted);
+  min-width: 90px;
+}
+
+.risk-badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.risk-high {
+  background-color: #fee2e2;
+  color: #991b1b;
+}
+
+.risk-medium {
+  background-color: #fef3c7;
+  color: #92400e;
+}
+
+.risk-low {
+  background-color: #d1fae5;
+  color: #065f46;
+}
+
+[data-bs-theme="dark"] .risk-high {
+  background-color: #422006;
+  color: #fcd34d;
+}
+
+[data-bs-theme="dark"] .risk-medium {
+  background-color: #422006;
+  color: #fcd34d;
+}
+
+[data-bs-theme="dark"] .risk-low {
+  background-color: #052e16;
+  color: #6ee7b7;
+}
+
+/* Confirmation */
+.assist-confirmation {
+  background-color: var(--aperture-surface);
+  border-radius: var(--aperture-radius);
+  padding: 1.25rem;
+  box-shadow: var(--aperture-shadow-sm);
+  text-align: center;
+}
+
+.confirmation-message {
+  margin-bottom: 1rem;
+}
+
+.spoken-response {
+  font-size: 1.05rem;
+  font-weight: 500;
+  color: var(--aperture-text);
+}
+
+.say-confirm {
+  margin-top: 0.5rem;
+}
+
+.confirmation-buttons {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.confirmation-buttons .btn {
+  min-width: 100px;
+  min-height: 48px;
+  font-weight: 600;
+}
+
+/* Error */
+.assist-error {
+  background-color: var(--aperture-surface);
+  border-radius: var(--aperture-radius);
+  padding: 1.25rem;
+  box-shadow: var(--aperture-shadow-sm);
+  text-align: center;
+}
+
+.error-message {
+  font-size: 1rem;
+  color: #ef4444;
+  margin-bottom: 1rem;
+}
+
+.error-buttons {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
+}
+
+.error-buttons .btn {
+  min-width: 100px;
+  min-height: 48px;
+}
+
+/* Commands help */
+.assist-commands-help {
+  margin-top: auto;
+  padding-bottom: 1rem;
+}
+
+.assist-commands-help summary {
+  cursor: pointer;
+  padding: 0.5rem;
+  text-align: center;
+}
+
+.assist-commands-help ul {
+  list-style: none;
+  padding-left: 0;
+}
+
+.assist-commands-help li {
+  padding: 0.2rem 0;
+}

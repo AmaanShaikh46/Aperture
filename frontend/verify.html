@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/aperture.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0d6efd" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="stylesheet" href="/node_modules/bootstrap/dist/css/bootstrap.min.css" />
+    <link rel="stylesheet" href="/node_modules/bootstrap-icons/font/bootstrap-icons.css" />
+    <link rel="stylesheet" href="/css/bootstrap-overrides.css" />
+    <link rel="stylesheet" href="/css/app.css" />
+    <title>Verify Email — APERTURE</title>
+  </head>
+  <body>
+    <div id="app">
+      <div class="auth-page">
+        <div class="auth-brand">
+          <i class="bi bi-aperture"></i>
+          <h1>APERTURE</h1>
+        </div>
+        <div class="auth-card card">
+          <div class="card-body p-4">
+            <h2 class="h4 mb-3">Verify Your Email</h2>
+            <p class="text-muted mb-3">We sent a verification code to your email. Enter it below to continue.</p>
+            <form id="verify-form">
+              <div class="mb-3">
+                <label for="email" class="form-label">Email</label>
+                <input type="email" class="form-control" id="email" required autocomplete="email" />
+              </div>
+              <div class="mb-3">
+                <label for="token" class="form-label">Verification Code</label>
+                <input type="text" class="form-control" id="token" required autocomplete="one-time-code" maxlength="6" placeholder="Enter 6-digit code" />
+              </div>
+              <div id="verify-error" class="alert alert-danger d-none" role="alert"></div>
+              <button type="submit" class="btn btn-primary w-100 btn-lg" id="verify-btn">
+                <span id="verify-btn-text">Verify</span>
+                <span id="verify-btn-spinner" class="spinner-border spinner-border-sm d-none" role="status"></span>
+              </button>
+            </form>
+            <div class="auth-links">
+              <button type="button" class="btn btn-link p-0" id="resend-btn">Didn't get the code? Resend</button>
+              <br />
+              <a href="login.html">Back to sign in</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script type="module">
+      import { auth } from './js/services/auth-service.js';
+      import { initTheme, showToast } from './js/utils.js';
+      import { USE_MOCK_API } from './js/config.js';
+
+      initTheme();
+
+      const form = document.getElementById('verify-form');
+      const errorEl = document.getElementById('verify-error');
+      const btn = document.getElementById('verify-btn');
+      const btnText = document.getElementById('verify-btn-text');
+      const btnSpinner = document.getElementById('verify-btn-spinner');
+      const resendBtn = document.getElementById('resend-btn');
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        errorEl.classList.add('d-none');
+        btn.disabled = true;
+        btnText.textContent = 'Verifying...';
+        btnSpinner.classList.remove('d-none');
+
+        const email = document.getElementById('email').value;
+        const token = document.getElementById('token').value;
+
+        try {
+          if (USE_MOCK_API) {
+            showToast('Email verified (mock mode)', 'success');
+            setTimeout(() => { window.location.href = 'app.html'; }, 500);
+            return;
+          }
+          await auth.verifyOtp(email, token);
+          window.location.href = 'app.html';
+        } catch (err) {
+          errorEl.textContent = err.message || 'Verification failed. Please check the code.';
+          errorEl.classList.remove('d-none');
+          btn.disabled = false;
+          btnText.textContent = 'Verify';
+          btnSpinner.classList.add('d-none');
+        }
+      });
+
+      resendBtn.addEventListener('click', async () => {
+        const email = document.getElementById('email').value;
+        if (!email) { showToast('Enter your email first.', 'warning'); return; }
+        try {
+          if (USE_MOCK_API) { showToast('Code resent (mock mode)', 'info'); return; }
+          await auth.resendOtp(email);
+          showToast('Verification code resent.', 'success');
+        } catch (err) {
+          showToast('Could not resend code.', 'danger');
+        }
+      });
+    </script>
+  </body>
+</html>
