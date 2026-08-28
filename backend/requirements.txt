@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+
+sqlalchemy
+asyncpg
+alembic
+
+pydantic-settings
+
+PyJWT[crypto]
+
+httpx
+
+pytest
+pytest-asyncio
