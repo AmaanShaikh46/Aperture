@@ -19,7 +19,7 @@ const APERTURE_CONFIG = {
   // Supabase public client configuration (anon key only — no service-role key).
   SUPABASE: {
     URL: import.meta.env.VITE_SUPABASE_URL || '',
-    ANON_KEY: import.meta.env.VITE_SUPABASE_ANON_KEY || '',
+    PUBLISHABLE_KEY: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || '',
   },
 
   // WebRTC ICE server configuration.
