@@ -13,7 +13,7 @@ export async function getContacts() {
       return { ...user, addedAt: c.addedAt };
     });
   }
-  return get('/api/contacts');
+  return get('/api/v1/users/contacts');
 }
 
 /** Add a user to contacts. */
@@ -24,7 +24,7 @@ export async function addContact(userId) {
     }
     return { success: true };
   }
-  return post('/api/contacts', { userId });
+  return post('/api/v1/users/contacts', { contact_user_id: userId });
 }
 
 /** Remove a user from contacts. */
@@ -34,7 +34,7 @@ export async function removeContact(userId) {
     if (idx >= 0) mockContacts.splice(idx, 1);
     return { success: true };
   }
-  return deleteRequest(`/api/contacts/${userId}`);
+  return deleteRequest(`/api/v1/users/contacts/${userId}`);
 }
 
 export default { getContacts, addContact, removeContact };

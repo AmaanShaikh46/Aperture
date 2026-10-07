@@ -32,7 +32,7 @@ export async function searchUsers(query) {
         u.email.toLowerCase().includes(q),
     );
   }
-  return get('/api/users/search', { query: { q: query } });
+  return get('/api/v1/users/search', { query: { q: query } });
 }
 
 export default { getCurrentUser, updateProfile, searchUsers };
