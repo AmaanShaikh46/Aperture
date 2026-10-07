@@ -5,7 +5,7 @@
 
 const APERTURE_CONFIG = {
   // Set to true to use isolated mock data instead of the real backend.
-  USE_MOCK_API: false,
+  USE_MOCK_API: true,
 
   // REST API base URL for the FastAPI backend.
   API_BASE_URL: 'http://localhost:8000',
