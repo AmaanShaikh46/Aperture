@@ -10,11 +10,11 @@ let supabase = null;
 /** Lazily create the Supabase client. */
 function getSupabase() {
   if (!supabase) {
-    if (!SUPABASE.URL || !SUPABASE.ANON_KEY) {
+    if (!SUPABASE.URL || !SUPABASE.PUBLISHABLE_KEY) {
       console.warn('[auth] Supabase URL/key not configured — auth will not function.');
       return null;
     }
-    supabase = createClient(SUPABASE.URL, SUPABASE.ANON_KEY, {
+    supabase = createClient(SUPABASE.URL, SUPABASE.PUBLISHABLE_KEY, {
       auth: {
         persistSession: true,
         autoRefreshToken: true,

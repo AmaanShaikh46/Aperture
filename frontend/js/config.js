@@ -5,7 +5,7 @@
 
 const APERTURE_CONFIG = {
   // Set to true to use isolated mock data instead of the real backend.
-  USE_MOCK_API: true,
+  USE_MOCK_API: false,
 
   // REST API base URL for the FastAPI backend.
   API_BASE_URL: 'http://localhost:8000',
@@ -19,7 +19,7 @@ const APERTURE_CONFIG = {
   // Supabase public client configuration (anon key only — no service-role key).
   SUPABASE: {
     URL: import.meta.env.VITE_SUPABASE_URL || '',
-    ANON_KEY: import.meta.env.VITE_SUPABASE_ANON_KEY || '',
+    PUBLISHABLE_KEY: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || '',
   },
 
   // WebRTC ICE server configuration.

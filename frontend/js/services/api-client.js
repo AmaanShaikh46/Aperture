@@ -110,4 +110,17 @@ export function checkHealth() {
   return get('/api/health');
 }
 
-export default { apiRequest, get, post, patch, deleteRequest, checkHealth };
+export default {
+  apiRequest,
+  get,
+  post,
+  patch,
+  deleteRequest,
+  checkHealth,
+  getMyProfile,
+};
+
+
+export function getMyProfile() {
+    return get('/api/v1/users/me');
+}
