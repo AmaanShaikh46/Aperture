@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey
+from sqlalchemy import DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.database import Base
@@ -9,6 +9,14 @@ from app.database.database import Base
 
 class Contact(Base):
     __tablename__ = "contacts"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "contact_user_id",
+            name="uq_contacts_user_contact",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True,

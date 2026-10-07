@@ -140,8 +140,36 @@ async def add_contact(
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    current_user_id = uuid.UUID(current_user["id"])
+
+    if contact_data.contact_user_id == current_user_id:
+        return {
+            "error": "You cannot add yourself as a contact"
+        }
+
+    # Check if the contact already exists
+    result = await db.execute(
+        select(Contact).where(
+            Contact.user_id == current_user_id,
+            Contact.contact_user_id == contact_data.contact_user_id,
+        )
+    )
+
+    existing_contact = result.scalar_one_or_none()
+
+    if existing_contact:
+        return {
+            "contact": {
+                "id": str(existing_contact.id),
+                "user_id": str(existing_contact.user_id),
+                "contact_user_id": str(existing_contact.contact_user_id),
+                "created_at": existing_contact.created_at,
+            }
+        }
+
+    # Create new contact
     contact = Contact(
-        user_id=current_user["id"],
+        user_id=current_user_id,
         contact_user_id=contact_data.contact_user_id,
     )
 
@@ -174,6 +202,7 @@ async def get_contacts(
         .where(
             Contact.user_id == current_user_id
         )
+        .distinct()
         .order_by(Profile.display_name)
     )
 
