@@ -3,12 +3,14 @@
  * Renders conversation list, chat header, message list, composer,
  * typing indicator, presence, and all empty/loading/error/retry states.
  */
-import { getConversations } from '../services/conversation-service.js';
+import { getConversations, createConversation } from '../services/conversation-service.js';
 import { getMessages, sendMessage, markMessageRead } from '../services/message-service.js';
 import { getPresence } from '../services/presence-service.js';
 import { auth } from '../services/auth-service.js';
 import { eventRouter, EventTypes } from '../realtime/event-router.js';
+import { sendSocketEvent } from '../realtime/websocket-client.js';
 import { escapeHtml, formatTime, formatDate, formatLastSeen, getInitials, avatarColor, debounce } from '../utils.js';
+import { searchUsers } from '../services/user-service.js';
 
 let currentUser = null;
 let activeConversationId = null;
@@ -30,6 +32,11 @@ export async function initChatPage(container) {
   }
 
   renderShell(container);
+
+  document
+    .getElementById('new-chat-btn')
+    .addEventListener('click', openNewChatSearch);
+
   await loadConversations();
 
   // Subscribe to real-time events.
@@ -79,9 +86,23 @@ function renderShell(container) {
   container.innerHTML = `
     <div class="chat-shell">
       <aside class="conversation-list-panel" id="conv-list-panel">
-        <div class="conversation-list-header">
+
+
+
+        <div class="conversation-list-header d-flex justify-content-between align-items-center">
           <h2 class="h6 mb-0">Chats</h2>
+          <button
+            id="new-chat-btn"
+            class="btn btn-sm btn-primary"
+            aria-label="New chat"
+          >
+            <i class="bi bi-plus-lg"></i>
+            New Chat
+          </button>
         </div>
+
+
+
         <div id="conversation-list" class="conversation-list"></div>
       </aside>
       <section class="chat-area" id="chat-area">
@@ -91,6 +112,114 @@ function renderShell(container) {
         </div>
       </section>
     </div>`;
+}
+
+
+function openNewChatSearch() {
+  const listEl = document.getElementById('conversation-list');
+
+  listEl.innerHTML = `
+    <div class="p-3">
+      <div class="d-flex align-items-center mb-3">
+        <button
+          id="new-chat-back"
+          class="btn btn-sm btn-outline-secondary me-2"
+          aria-label="Back to chats"
+        >
+          <i class="bi bi-arrow-left"></i>
+        </button>
+        <strong>New Chat</strong>
+      </div>
+
+      <input
+        type="text"
+        id="new-chat-search"
+        class="form-control"
+        placeholder="Search username or name..."
+        autocomplete="off"
+      />
+
+      <div id="new-chat-results" class="mt-3"></div>
+    </div>
+  `;
+
+  document
+    .getElementById('new-chat-back')
+    .addEventListener('click', renderConversationList);
+
+  const input = document.getElementById('new-chat-search');
+
+  input.addEventListener(
+    'input',
+    debounce(async (event) => {
+      const query = event.target.value.trim();
+      const resultsEl = document.getElementById('new-chat-results');
+
+      if (!query) {
+        resultsEl.innerHTML = '';
+        return;
+      }
+
+      try {
+        const users = await searchUsers(query);
+
+        if (!users.length) {
+          resultsEl.innerHTML = `
+            <div class="text-muted small">
+              No users found.
+            </div>
+          `;
+          return;
+        }
+
+        resultsEl.innerHTML = users
+          .map((user) => `
+            <button
+              class="w-100 border-0 bg-transparent text-start p-2 d-flex align-items-center new-chat-user"
+              data-user-id="${user.id}"
+            >
+              <div
+                class="avatar avatar-sm me-2"
+                style="background-color:${avatarColor(user.displayName)}"
+              >
+                ${getInitials(user.displayName)}
+              </div>
+
+              <div>
+                <div class="fw-semibold">
+                  ${escapeHtml(user.displayName)}
+                </div>
+                <div class="text-muted small">
+                  @${escapeHtml(user.username || '')}
+                </div>
+              </div>
+            </button>
+          `)
+          .join('');
+
+        resultsEl.querySelectorAll('.new-chat-user').forEach((button) => {
+          button.addEventListener('click', async () => {
+            const conversation = await createConversation(
+              button.dataset.userId
+            );
+
+            await loadConversations();
+            await openConversation(conversation.id);
+          });
+        });
+      } catch (error) {
+        console.error('[chat] User search failed:', error);
+
+        resultsEl.innerHTML = `
+          <div class="text-danger small">
+            Search failed.
+          </div>
+        `;
+      }
+    }, 300)
+  );
+
+  input.focus();
 }
 
 /** Load and render the conversation list. */
@@ -257,28 +386,20 @@ function renderStatusIcon(status) {
 async function handleSend() {
   const input = document.getElementById('message-input');
   const content = input.value.trim();
+
   if (!content || !activeConversationId) return;
-  input.value = '';
-  try {
-    const msg = await sendMessage(activeConversationId, content);
-    messages.push(msg);
-    renderMessages();
-    // Update conversation list
-    const conv = conversations.find((c) => c.id === activeConversationId);
-    if (conv) {
-      conv.lastMessage = msg;
-      conv.updatedAt = msg.createdAt;
-      renderConversationList();
-    }
-  } catch (e) {
-    const listEl = document.getElementById('message-list');
-    if (listEl) {
-      const errDiv = document.createElement('div');
-      errDiv.className = 'message-send-error';
-      errDiv.innerHTML = `<div class="alert alert-danger alert-sm m-2">Message could not be sent. <button class="btn btn-sm btn-link" onclick="this.parentElement.parentElement.remove()">Dismiss</button></div>`;
-      listEl.appendChild(errDiv);
-    }
+
+  const sent = sendSocketEvent(EventTypes.MESSAGE_SEND, {
+    conversationId: activeConversationId,
+    content,
+  });
+
+  if (!sent) {
+    console.warn('[chat] WebSocket is not connected.');
+    return;
   }
+
+  input.value = '';
 }
 
 /** Handle typing indicator. */
