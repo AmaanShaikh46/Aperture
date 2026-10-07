@@ -117,8 +117,10 @@ export default {
   patch,
   deleteRequest,
   checkHealth,
-  checkAuthenticatedUser,
+  getMyProfile,
 };
-export function checkAuthenticatedUser() {
-  return get('/api/v1/health/me');
+
+
+export function getMyProfile() {
+    return get('/api/v1/users/me');
 }

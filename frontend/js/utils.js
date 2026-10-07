@@ -3,6 +3,7 @@
  */
 
 /** Generate a UUID v4 string. */
+import * as bootstrap from 'bootstrap';
 export function uuid() {
   if (crypto && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
@@ -145,7 +146,7 @@ export function showToast(message, variant = 'primary', delay = 4000) {
     </div>`;
   const el = wrapper.firstElementChild;
   container.appendChild(el);
-  const toast = new window.bootstrap.Toast(el, { delay });
+  const toast = new bootstrap.Toast(el, { delay });
   toast.show();
   el.addEventListener('hidden.bs.toast', () => el.remove());
 }
