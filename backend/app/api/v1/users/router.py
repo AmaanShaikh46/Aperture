@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy import or_,select
 from sqlalchemy.ext.asyncio import AsyncSession
-
+import uuid
 from app.schemas.user import ProfileUpdate, UserSearchResult
 
 from app.core.security import get_current_user
@@ -157,3 +157,34 @@ async def add_contact(
             "created_at": contact.created_at,
         }
     }
+
+@router.get("/contacts")
+async def get_contacts(
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    current_user_id = uuid.UUID(current_user["id"])
+
+    result = await db.execute(
+        select(Profile)
+        .join(
+            Contact,
+            Contact.contact_user_id == Profile.id,
+        )
+        .where(
+            Contact.user_id == current_user_id
+        )
+        .order_by(Profile.display_name)
+    )
+
+    profiles = result.scalars().all()
+
+    return [
+        {
+            "id": str(profile.id),
+            "username": profile.username,
+            "displayName": profile.display_name,
+            "avatarUrl": profile.avatar_url,
+        }
+        for profile in profiles
+    ]

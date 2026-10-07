@@ -30,6 +30,7 @@ if config.config_file_name is not None:
 from app.database.database import Base
 from app.models.profiles import Profile
 from app.models.contacts import Contact
+from app.models import Profile, Contact, Conversation, ConversationParticipant, Message
 
 target_metadata = Base.metadata
 
