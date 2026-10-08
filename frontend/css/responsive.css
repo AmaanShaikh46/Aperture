@@ -53,9 +53,36 @@
     width: 100%;
   }
 
+  .message-explorer {
+    position: absolute;
+    z-index: 5;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(92vw, 460px);
+    min-width: 0;
+    max-width: 100%;
+    box-shadow: var(--aperture-shadow-lg);
+  }
+
   /* Show back button on mobile when in a conversation */
   .chat-header .chat-back-btn {
     display: flex !important;
+  }
+}
+
+/* On tablets, let the Explorer overlay the chat instead of squeezing the timeline. */
+@media (min-width: 768px) and (max-width: 1099.98px) {
+  .message-explorer {
+    position: absolute;
+    z-index: 5;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(76vw, 460px);
+    min-width: 0;
+    max-width: 100%;
+    box-shadow: var(--aperture-shadow-lg);
   }
 }
 
