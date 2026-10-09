@@ -9,6 +9,10 @@ pydantic-settings
 
 PyJWT[crypto]
 
+supabase
+
+python-multipart
+
 httpx
 
 pytest
