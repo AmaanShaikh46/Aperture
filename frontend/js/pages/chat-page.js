@@ -9,7 +9,16 @@ import { getPresence } from '../services/presence-service.js';
 import { auth } from '../services/auth-service.js';
 import { eventRouter, EventTypes } from '../realtime/event-router.js';
 import { sendSocketEvent } from '../realtime/websocket-client.js';
-import { escapeHtml, formatTime, formatDate, formatLastSeen, getInitials, avatarColor, debounce } from '../utils.js';
+import {
+  escapeHtml,
+  formatTime,
+  formatDate,
+  formatLastSeen,
+  formatMessageDay,
+  getInitials,
+  avatarColor,
+  debounce
+} from '../utils.js';
 import { searchUsers } from '../services/user-service.js';
 
 let currentUser = null;
@@ -18,6 +27,12 @@ let conversations = [];
 let messages = [];
 let typingTimeout = null;
 let unsubscribeFns = [];
+
+let explorerOpen = false;
+let explorerSenderId = 'all';
+let explorerDate = '';
+let explorerTab = 'messages';
+let explorerSearch = '';
 
 /** Initialize the chat page. */
 export async function initChatPage(container) {
@@ -290,7 +305,18 @@ async function openConversation(conversationId) {
           <div class="chat-header-status" id="chat-header-status">...</div>
         </div>
       </div>
+
+      <button
+        id="message-explorer-btn"
+        class="btn btn-sm btn-link"
+        type="button"
+        aria-label="Message Explorer"
+        title="Message Explorer"
+      >
+        <i class="bi bi-search"></i>
+      </button>
     </div>
+
     <div class="message-list" id="message-list">
       <div class="loading-state"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div></div>
     </div>
@@ -298,7 +324,12 @@ async function openConversation(conversationId) {
     <div class="message-composer" id="message-composer">
       <input type="text" id="message-input" class="form-control" placeholder="Type a message..." aria-label="Type a message" autocomplete="off" />
       <button id="send-btn" class="btn btn-primary" aria-label="Send message"><i class="bi bi-send-fill"></i></button>
-    </div>`;
+    </div>
+    <aside
+      id="message-explorer"
+      class="message-explorer"
+      hidden
+    ></aside>`;
 
   const conv = conversations.find((c) => c.id === conversationId);
   if (conv) {
@@ -323,8 +354,13 @@ async function openConversation(conversationId) {
 
   await loadMessages(conversationId);
 
+  document.getElementById('message-explorer-btn')?.addEventListener('click', () => {
+    openMessageExplorer('all');
+  });
+
   const input = document.getElementById('message-input');
   const sendBtn = document.getElementById('send-btn');
+
   sendBtn.addEventListener('click', handleSend);
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
@@ -349,21 +385,362 @@ async function loadMessages(conversationId) {
   }
 }
 
-/** Render the message list. */
+
+/** Get the currently active conversation. */
+function getActiveConversation() {
+  return conversations.find((c) => c.id === activeConversationId);
+}
+
+/** Get a participant from the active group conversation. */
+function getSenderInfo(senderId) {
+  const conv = getActiveConversation();
+  return conv?.participants?.find((p) => p.id === senderId) || null;
+}
+
+/** Open the message explorer. */
+function openMessageExplorer(senderId = 'all') {
+  const explorer = document.getElementById('message-explorer');
+  if (!explorer) return;
+
+  explorerOpen = true;
+  explorerSenderId = senderId;
+
+  document.getElementById('chat-area')?.classList.add('has-message-explorer');
+
+  renderMessageExplorer();
+}
+
+/* Render the message explorer. */
+function renderMessageExplorer() {
+  const explorer = document.getElementById('message-explorer');
+  const conv = getActiveConversation();
+
+  if (!explorer || !conv) {
+    if (explorer) explorer.hidden = true;
+    return;
+  }
+
+  const isGroup = conv.type === 'group';
+
+  explorer.hidden = false;
+
+  const participants = conv.participants || [];
+
+let filteredMessages = messages.filter((msg) => {
+  const searchText = explorerSearch.trim().toLowerCase();
+
+  const searchMatches =
+    !searchText ||
+    (msg.content || '').toLowerCase().includes(searchText);
+
+  const senderMatches =
+    explorerSenderId === 'all' ||
+    msg.senderId === explorerSenderId;
+
+  const messageDate = new Date(msg.createdAt);
+
+  const localDate =
+    `${messageDate.getFullYear()}-${String(messageDate.getMonth() + 1).padStart(2, '0')}-${String(messageDate.getDate()).padStart(2, '0')}`;
+
+  const dateMatches =
+    !explorerDate ||
+    localDate === explorerDate;
+
+  let tabMatches = true;
+
+  if (explorerTab === 'media') {
+    tabMatches =
+      msg.type === 'image' ||
+      msg.type === 'file' ||
+      msg.type === 'document' ||
+      msg.type === 'media' ||
+      !!msg.fileName ||
+      !!msg.mimeType;
+  }
+
+  if (explorerTab === 'links') {
+    tabMatches =
+      msg.type === 'link' ||
+      /^https?:\/\//i.test(msg.content || '');
+  }
+
+  return searchMatches && senderMatches && dateMatches && tabMatches;
+});
+
+  explorer.innerHTML = `
+    <div class="message-explorer-header">
+      <div>
+        <strong>Message Explorer</strong>
+        <div class="small text-muted">
+          Search messages in this conversation
+        </div>
+      </div>
+
+      <button
+        type="button"
+        class="btn btn-sm btn-link"
+        id="message-explorer-close"
+        aria-label="Close Message Explorer"
+      >
+        <i class="bi bi-x-lg"></i>
+      </button>
+    </div>
+
+    <div class="message-explorer-filters">
+    <input
+      type="search"
+      id="explorer-search"
+      class="form-control form-control-sm"
+      placeholder="Search messages..."
+      value="${escapeHtml(explorerSearch)}"
+    />
+    ${
+      isGroup
+        ? `
+          <select id="explorer-sender" class="form-select form-select-sm">
+            <option value="all">All participants</option>
+            ${participants.map((participant) => `
+              <option
+                value="${escapeHtml(participant.id)}"
+                ${explorerSenderId === participant.id ? 'selected' : ''}
+              >
+                ${escapeHtml(participant.displayName)}
+              </option>
+            `).join('')}
+          </select>
+        `
+        : ''
+    }
+      <input
+        type="date"
+        id="explorer-date"
+        class="form-control form-control-sm"
+        value="${escapeHtml(explorerDate)}"
+      />
+    </div>
+
+    <div class="message-explorer-tabs">
+      <button
+        type="button"
+        class="btn btn-sm ${explorerTab === 'messages' ? 'active' : ''}"
+        data-explorer-tab="messages"
+      >
+        Messages
+      </button>
+
+      <button
+        type="button"
+        class="btn btn-sm ${explorerTab === 'media' ? 'active' : ''}"
+        data-explorer-tab="media"
+      >
+        Media
+      </button>
+
+      <button
+        type="button"
+        class="btn btn-sm ${explorerTab === 'links' ? 'active' : ''}"
+        data-explorer-tab="links"
+      >
+        Links
+      </button>
+    </div>
+
+    <div class="message-explorer-results">
+      ${
+        filteredMessages.length
+          ? filteredMessages.map((msg) => `
+              <button
+                type="button"
+                class="message-explorer-result"
+                data-message-id="${escapeHtml(msg.id)}"
+                data-search-text="${escapeHtml(msg.content || '')}"
+              >
+                <div class="fw-semibold">
+                  ${escapeHtml(
+                    participants.find((p) => p.id === msg.senderId)?.displayName
+                    || (msg.senderId === currentUser.id ? 'You' : conv.participantName)
+                    || 'Unknown'
+                  )}
+                </div>
+                <div class="small text-muted">
+                  ${escapeHtml(msg.content || '')}
+                </div>
+                <div class="small text-muted">
+                  ${formatTime(msg.createdAt)}
+                </div>
+              </button>
+            `).join('')
+          : `<div class="text-muted small p-3">No matching messages.</div>`
+      }
+    </div>
+  `;
+
+  document
+    .getElementById('message-explorer-close')
+    ?.addEventListener('click', closeMessageExplorer);
+
+  document
+    .getElementById('explorer-sender')
+    ?.addEventListener('change', (event) => {
+      explorerSenderId = event.target.value;
+      renderMessageExplorer();
+    });
+
+  document
+    .getElementById('explorer-date')
+    ?.addEventListener('change', (event) => {
+      explorerDate = event.target.value;
+      renderMessageExplorer();
+    });
+  document
+    .getElementById('explorer-search')
+    ?.addEventListener('input', (event) => {
+      explorerSearch = event.target.value;
+
+      const searchText = explorerSearch.trim().toLowerCase();
+
+      document
+        .querySelectorAll('.message-explorer-result')
+        .forEach((result) => {
+          const content = result.textContent.toLowerCase();
+
+          result.hidden = searchText && !content.includes(searchText);
+        });
+    });
+
+  explorer
+    .querySelectorAll('[data-explorer-tab]')
+    .forEach((button) => {
+      button.addEventListener('click', () => {
+        explorerTab = button.dataset.explorerTab;
+        renderMessageExplorer();
+      });
+    });
+
+  explorer
+    .querySelectorAll('.message-explorer-result')
+    .forEach((result) => {
+      result.addEventListener('click', () => {
+        jumpToMessage(result.dataset.messageId);
+      });
+    });
+}
+
+/** Close the message explorer. */
+function closeMessageExplorer() {
+  const explorer = document.getElementById('message-explorer');
+
+  explorerOpen = false;
+  explorerSenderId = 'all';
+  explorerDate = '';
+  explorerTab = 'messages';
+
+  document.getElementById('chat-area')?.classList.remove('has-message-explorer');
+
+  if (explorer) {
+    explorer.hidden = true;
+    explorer.innerHTML = '';
+  }
+}
+
+/** Jump to and highlight a message in the chat. */
+function jumpToMessage(messageId) {
+  const messageEl = Array.from(
+    document.querySelectorAll('.message-bubble[data-message-id]')
+  ).find((element) => element.dataset.messageId === messageId);
+
+  if (!messageEl) return;
+
+  closeMessageExplorer();
+
+  messageEl.scrollIntoView({
+    behavior: 'smooth',
+    block: 'center',
+  });
+
+  messageEl.classList.remove('message-highlight');
+
+  requestAnimationFrame(() => {
+    messageEl.classList.add('message-highlight');
+
+    setTimeout(() => {
+      messageEl.classList.remove('message-highlight');
+    }, 1500);
+  });
+}
+
+
+
+/** Rendr the msg list. */
 function renderMessages() {
   const listEl = document.getElementById('message-list');
   if (!listEl) return;
+
   if (!messages || messages.length === 0) {
-    listEl.innerHTML = `<div class="empty-state"><i class="bi bi-chat"></i><p>No messages yet. Say hello!</p></div>`;
+    listEl.innerHTML = `
+      <div class="empty-state">
+        <i class="bi bi-chat"></i>
+        <p>No messages yet. Say hello!</p>
+      </div>`;
     return;
   }
+
+  const conv = conversations.find((c) => c.id === activeConversationId);
+  const isGroup = conv?.type === 'group';
+
+  let previousDay = null;
+
   listEl.innerHTML = messages
     .map((msg) => {
       const isMine = msg.senderId === currentUser.id;
       const statusIcon = isMine ? renderStatusIcon(msg.status) : '';
+
+      const messageDate = new Date(msg.createdAt);
+      const dayKey = Number.isNaN(messageDate.getTime())
+        ? ''
+        : `${messageDate.getFullYear()}-${messageDate.getMonth()}-${messageDate.getDate()}`;
+
+      const dayDivider = dayKey && dayKey !== previousDay
+        ? `<div class="message-day-divider">
+             <span>${escapeHtml(formatMessageDay(msg.createdAt))}</span>
+           </div>`
+        : '';
+
+      if (dayKey) previousDay = dayKey;
+
+      let senderName = '';
+
+      if (isGroup) {
+        const sender = conv.participants?.find(
+          (p) => p.id === msg.senderId
+        );
+
+        if (sender) {
+          senderName = `
+            <button
+              type="button"
+              class="group-message-sender"
+              data-sender-id="${escapeHtml(msg.senderId)}"
+              aria-label="Explore messages from ${escapeHtml(sender.displayName)}"
+            >
+              ${escapeHtml(sender.displayName)}
+            </button>`;
+        }
+      }
+
       return `
-        <div class="message-bubble ${isMine ? 'mine' : 'theirs'}">
-          <div class="message-content">${escapeHtml(msg.content)}</div>
+        ${dayDivider}
+
+        <div
+          class="message-bubble ${isMine ? 'mine' : 'theirs'}"
+          data-message-id="${escapeHtml(msg.id)}"
+        >
+          ${senderName}
+
+          <div class="message-content">
+            ${escapeHtml(msg.content)}
+          </div>
+
           <div class="message-meta">
             <span class="message-time">${formatTime(msg.createdAt)}</span>
             ${statusIcon}
@@ -371,6 +748,16 @@ function renderMessages() {
         </div>`;
     })
     .join('');
+
+  // Make sender names clickable in group conversations.
+  if (isGroup) {
+    listEl.querySelectorAll('.group-message-sender').forEach((el) => {
+      el.addEventListener('click', () => {
+        openMessageExplorer(el.dataset.senderId);
+      });
+    });
+  }
+
   listEl.scrollTop = listEl.scrollHeight;
 }
 

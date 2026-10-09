@@ -53,6 +53,15 @@ function renderLayout() {
       </div>
       <div class="app-topbar-center" id="app-page-title">Chats</div>
       <div class="app-topbar-right">
+        <button
+          class="btn btn-sm btn-link"
+          id="contacts-nav"
+          aria-label="Contacts"
+          title="Contacts"
+        >
+          <i class="bi bi-people"></i>
+        </button>
+
         <button class="btn btn-sm btn-link app-ws-indicator" id="ws-indicator" aria-label="Connection status" title="Connecting...">
           <span class="ws-dot ws-connecting" id="ws-dot"></span>
         </button>
@@ -88,7 +97,17 @@ function setupNavigation() {
       navigateTo(btn.dataset.page);
     });
   });
+
+  const contactsBtn = document.getElementById('contacts-nav');
+
+if (contactsBtn) {
+  contactsBtn.addEventListener('click', () => {
+    navigateTo('contacts');
+  });
 }
+}
+
+
 
 /** Navigate to a page. */
 async function navigateTo(page) {

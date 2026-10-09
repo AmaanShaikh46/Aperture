@@ -23,6 +23,32 @@ export function formatTime(iso) {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+export function formatMessageDay(iso) {
+  if (!iso) return '';
+
+  const d = new Date(iso);
+
+  if (isNaN(d.getTime())) return '';
+
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+
+  const sameDay = (a, b) =>
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate();
+
+  if (sameDay(d, today)) return 'Today';
+  if (sameDay(d, yesterday)) return 'Yesterday';
+
+  return d.toLocaleDateString([], {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+}
+
 /** Format an ISO timestamp into a short date (e.g. "Aug 24"). */
 export function formatDate(iso) {
   if (!iso) return '';

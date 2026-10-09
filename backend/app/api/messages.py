@@ -16,7 +16,6 @@ router = APIRouter()
 
 
 @router.post("/conversations/{conversation_id}/messages")
-@router.post("/conversations/{conversation_id}/messages")
 async def send_message(
     conversation_id: uuid.UUID,
     data: dict,
