@@ -1,9 +1,9 @@
 import uuid
 
-import jwt
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
 from sqlalchemy import select
 
+from app.core.security import verify_access_token
 from app.database.database import AsyncSessionLocal
 from app.models.conversation_participants import ConversationParticipant
 from app.services.connection_manager import manager
@@ -22,20 +22,16 @@ async def websocket_endpoint(websocket: WebSocket):
         return
 
     try:
-        payload = jwt.decode(
-            token,
-            options={"verify_signature": False},
-            audience="authenticated",
+        user = await verify_access_token(token)
+        user_id = user["id"]
+
+    except HTTPException as exc:
+        close_code = (
+            1008
+            if exc.status_code == 401
+            else 1011
         )
-
-        user_id = payload.get("sub")
-
-        if not user_id:
-            await websocket.close(code=1008)
-            return
-
-    except jwt.InvalidTokenError:
-        await websocket.close(code=1008)
+        await websocket.close(code=close_code)
         return
 
     await manager.connect(user_id, websocket)
@@ -49,30 +45,58 @@ async def websocket_endpoint(websocket: WebSocket):
 
             payload = data.get("payload", {})
 
-            conversation_id = uuid.UUID(
-                payload["conversationId"]
-            )
+            try:
+                conversation_id = uuid.UUID(
+                    payload["conversationId"]
+                )
+            except (KeyError, ValueError, TypeError):
+                await websocket.send_json({
+                    "type": "message.error",
+                    "payload": {
+                        "detail": "Invalid conversation ID",
+                    },
+                })
+                continue
 
             content = payload.get("content", "")
 
+            if not isinstance(content, str):
+                await websocket.send_json({
+                    "type": "message.error",
+                    "payload": {
+                        "detail": "Message content must be text",
+                    },
+                })
+                continue
+
             sender_id = uuid.UUID(user_id)
 
-            async with AsyncSessionLocal() as db:
-                message = await create_message(
-                    db=db,
-                    conversation_id=conversation_id,
-                    sender_id=sender_id,
-                    content=content,
-                )
-
-                result = await db.execute(
-                    select(ConversationParticipant.user_id).where(
-                        ConversationParticipant.conversation_id
-                        == conversation_id
+            try:
+                async with AsyncSessionLocal() as db:
+                    message = await create_message(
+                        db=db,
+                        conversation_id=conversation_id,
+                        sender_id=sender_id,
+                        content=content,
                     )
-                )
 
-                participant_ids = result.scalars().all()
+                    result = await db.execute(
+                        select(ConversationParticipant.user_id).where(
+                            ConversationParticipant.conversation_id
+                            == conversation_id
+                        )
+                    )
+
+                    participant_ids = result.scalars().all()
+
+            except HTTPException as exc:
+                await websocket.send_json({
+                    "type": "message.error",
+                    "payload": {
+                        "detail": exc.detail,
+                    },
+                })
+                continue
 
             message_data = {
                 "id": str(message.id),
@@ -93,4 +117,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
 
     except WebSocketDisconnect:
+        pass
+
+    finally:
         manager.disconnect(user_id, websocket)
