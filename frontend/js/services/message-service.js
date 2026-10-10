@@ -53,4 +53,34 @@ export async function markMessageRead(messageId) {
   return post(`/api/messages/${messageId}/read`);
 }
 
-export default { getMessages, sendMessage, markMessageRead };
+
+export async function uploadAttachment(conversationId, file, caption = '') {
+  if (USE_MOCK_API) {
+    throw new Error('Media uploads are unavailable in mock mode.');
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('caption', caption);
+
+  return post(
+    `/api/conversations/${conversationId}/messages/attachments`,
+    formData
+  );
+}
+
+export async function getAttachmentUrl(attachmentId) {
+  if (USE_MOCK_API) {
+    throw new Error('Media downloads are unavailable in mock mode.');
+  }
+
+  return get(`/api/attachments/${attachmentId}/url`);
+}
+
+export default {
+  getMessages,
+  sendMessage,
+  markMessageRead,
+  uploadAttachment,
+  getAttachmentUrl, 
+};

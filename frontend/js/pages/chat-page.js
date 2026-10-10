@@ -4,7 +4,15 @@
  * typing indicator, presence, and all empty/loading/error/retry states.
  */
 import { getConversations, createConversation } from '../services/conversation-service.js';
-import { getMessages, sendMessage, markMessageRead } from '../services/message-service.js';
+
+import {
+  getMessages,
+  sendMessage,
+  markMessageRead,
+  uploadAttachment,
+  getAttachmentUrl,
+} from '../services/message-service.js';
+
 import { getPresence } from '../services/presence-service.js';
 import { auth } from '../services/auth-service.js';
 import { eventRouter, EventTypes } from '../realtime/event-router.js';
@@ -21,10 +29,13 @@ import {
 } from '../utils.js';
 import { searchUsers } from '../services/user-service.js';
 
+
 let currentUser = null;
 let activeConversationId = null;
 let conversations = [];
 let messages = [];
+let pendingAttachment = null;
+let pendingAttachmentPreviewUrl = null;
 let typingTimeout = null;
 let unsubscribeFns = [];
 
@@ -262,8 +273,39 @@ function renderConversationList() {
       const isActive = conv.id === activeConversationId;
       const initials = getInitials(conv.participantName);
       const color = avatarColor(conv.participantName);
+
       const lastMsg = conv.lastMessage;
-      const lastMsgText = lastMsg ? escapeHtml(lastMsg.content) : '<span class="text-muted">No messages yet</span>';
+
+      let previewText = '<span class="text-muted">No messages yet</span>';
+
+      if (lastMsg) {
+        const caption = (lastMsg.content || '').trim();
+        const attachments = Array.isArray(lastMsg.attachments)
+          ? lastMsg.attachments
+          : [];
+
+        if (caption) {
+          previewText = escapeHtml(caption);
+        } else if (attachments.length > 0) {
+          const attachment = attachments[0];
+          const mimeType = attachment.mimeType || '';
+          const fileName = attachment.fileName || '';
+
+          if (mimeType.startsWith('image/')) {
+            previewText = '📷 Photo';
+          } else if (mimeType.startsWith('video/')) {
+            previewText = '🎥 Video';
+          } else if (fileName) {
+            previewText = `📎 ${escapeHtml(fileName)}`;
+          } else {
+            previewText = '📎 Attachment';
+          }
+        } else {
+          previewText = '<span class="text-muted">Message</span>';
+        }
+      }
+
+      const lastMsgText = previewText;
       const lastMsgTime = lastMsg ? formatDate(lastMsg.createdAt) : '';
       const unread = conv.unreadCount > 0 ? `<span class="badge bg-primary rounded-pill">${conv.unreadCount}</span>` : '';
       return `
@@ -321,9 +363,66 @@ async function openConversation(conversationId) {
       <div class="loading-state"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div></div>
     </div>
     <div class="typing-indicator" id="typing-indicator" style="display:none;"><span></span><span></span><span></span></div>
+    
     <div class="message-composer" id="message-composer">
-      <input type="text" id="message-input" class="form-control" placeholder="Type a message..." aria-label="Type a message" autocomplete="off" />
-      <button id="send-btn" class="btn btn-primary" aria-label="Send message"><i class="bi bi-send-fill"></i></button>
+
+      <!-- Attachment button -->
+      <button
+        type="button"
+        id="attach-file-btn"
+        class="btn btn-outline-secondary"
+        aria-label="Attach a file"
+        title="Attach a file"
+      >
+        <i class="bi bi-paperclip"></i>
+      </button>
+
+      <!-- Hidden file picker -->
+      <input
+        type="file"
+        id="attachment-input"
+        accept="image/*,video/*,application/pdf,.doc,.docx,.txt,.csv,.xlsx,.ppt,.pptx"
+        hidden
+      />
+
+      <!-- Selected attachment preview -->
+      <div
+        id="attachment-preview"
+        class="attachment-preview"
+        hidden
+      >
+        <div id="attachment-preview-content"></div>
+
+        <button
+          type="button"
+          id="remove-attachment-btn"
+          class="btn btn-sm btn-outline-secondary"
+          aria-label="Remove selected attachment"
+          title="Remove attachment"
+        >
+          <i class="bi bi-x-lg"></i>
+        </button>
+      </div>
+
+      <!-- Existing message input -->
+      <input
+        type="text"
+        id="message-input"
+        class="form-control"
+        placeholder="Type a message..."
+        aria-label="Type a message"
+        autocomplete="off"
+      />
+
+      <!-- Existing send button -->
+      <button
+        id="send-btn"
+        class="btn btn-primary"
+        aria-label="Send message"
+      >
+        <i class="bi bi-send-fill"></i>
+      </button>
+
     </div>
     <aside
       id="message-explorer"
@@ -362,6 +461,109 @@ async function openConversation(conversationId) {
   const sendBtn = document.getElementById('send-btn');
 
   sendBtn.addEventListener('click', handleSend);
+  const attachFileBtn = document.getElementById('attach-file-btn');
+  const attachmentInput = document.getElementById('attachment-input');
+
+  attachFileBtn?.addEventListener('click', () => {
+    attachmentInput?.click();
+  });
+
+  attachmentInput?.addEventListener('change', () => {
+    const file = attachmentInput.files?.[0];
+
+    if (!file) return;
+
+    if (file.size > 50 * 1024 * 1024) {
+      alert('File exceeds the 50 MB upload limit.');
+      attachmentInput.value = '';
+      return;
+    }
+
+    // Release any previous preview URL.
+    if (pendingAttachmentPreviewUrl) {
+      URL.revokeObjectURL(pendingAttachmentPreviewUrl);
+      pendingAttachmentPreviewUrl = null;
+    }
+
+    pendingAttachment = file;
+
+    const preview = document.getElementById('attachment-preview');
+    const previewContent = document.getElementById('attachment-preview-content');
+
+    if (!preview || !previewContent) {
+      pendingAttachment = null;
+      attachmentInput.value = '';
+      alert('The attachment preview could not be displayed.');
+      return;
+    }
+
+    previewContent.replaceChildren();
+
+    const details = document.createElement('div');
+    details.className = 'attachment-preview-details';
+
+    const fileName = document.createElement('div');
+    fileName.className = 'fw-semibold';
+    fileName.textContent = file.name;
+
+    const fileSize = document.createElement('div');
+    fileSize.className = 'small text-muted';
+    fileSize.textContent =
+      file.size < 1024 * 1024
+        ? `${(file.size / 1024).toFixed(1)} KB`
+        : `${(file.size / (1024 * 1024)).toFixed(2)} MB`;
+
+    details.append(fileName, fileSize);
+
+    if (file.type.startsWith('image/')) {
+      pendingAttachmentPreviewUrl = URL.createObjectURL(file);
+
+      const image = document.createElement('img');
+      image.src = pendingAttachmentPreviewUrl;
+      image.alt = file.name;
+      image.className = 'attachment-selection-image';
+
+      previewContent.append(image, details);
+    } else if (file.type.startsWith('video/')) {
+      pendingAttachmentPreviewUrl = URL.createObjectURL(file);
+
+      const video = document.createElement('video');
+      video.src = pendingAttachmentPreviewUrl;
+      video.controls = true;
+      video.preload = 'metadata';
+      video.className = 'attachment-selection-video';
+
+      previewContent.append(video, details);
+    } else {
+      const icon = document.createElement('i');
+      icon.className = 'bi bi-file-earmark-text attachment-selection-icon';
+      icon.setAttribute('aria-hidden', 'true');
+
+      previewContent.append(icon, details);
+    }
+
+    preview.hidden = false;
+    attachmentInput.value = '';
+  });
+  const removeAttachmentBtn = document.getElementById('remove-attachment-btn');
+
+  removeAttachmentBtn?.addEventListener('click', () => {
+    pendingAttachment = null;
+
+    if (pendingAttachmentPreviewUrl) {
+      URL.revokeObjectURL(pendingAttachmentPreviewUrl);
+      pendingAttachmentPreviewUrl = null;
+    }
+
+    const preview = document.getElementById('attachment-preview');
+    const previewContent = document.getElementById('attachment-preview-content');
+    const attachmentInput = document.getElementById('attachment-input');
+
+    if (preview) preview.hidden = true;
+    if (previewContent) previewContent.replaceChildren();
+    if (attachmentInput) attachmentInput.value = '';
+  });
+
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   });
@@ -670,6 +872,155 @@ function jumpToMessage(messageId) {
 }
 
 
+/** Render an attachment inside a message bubble. */
+async function renderAttachment(attachment, container) {
+  const card = document.createElement('div');
+  card.className = 'message-attachment';
+  card.textContent = 'Loading attachment...';
+  container.appendChild(card);
+
+  try {
+    const result = await getAttachmentUrl(attachment.id);
+
+    if (!result?.url) {
+      throw new Error('Attachment URL unavailable');
+    }
+
+    const url = new URL(result.url, window.location.origin);
+
+    if (!['http:', 'https:'].includes(url.protocol)) {
+      throw new Error('Invalid attachment URL');
+    }
+
+    card.replaceChildren();
+
+    const mimeType = attachment.mimeType || '';
+    const fileName = attachment.fileName || 'Download attachment';
+    const safeName = fileName.replace(/[\r\n]/g, ' ');
+
+    if (mimeType.startsWith('image/')) {
+      const image = document.createElement('img');
+
+      image.src = url.href;
+      image.alt = safeName;
+      image.loading = 'lazy';
+      image.className = 'message-media-preview';
+      image.tabIndex = 0;
+      image.setAttribute('role', 'button');
+      image.setAttribute('aria-label', `View image: ${safeName}`);
+
+      const openViewer = () => openImageViewer(url.href, safeName);
+
+      image.addEventListener('click', openViewer);
+
+      image.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          openViewer();
+        }
+      });
+
+      card.appendChild(image);
+
+    } else if (mimeType.startsWith('video/')) {
+      const video = document.createElement('video');
+
+      video.src = url.href;
+      video.controls = true;
+      video.preload = 'metadata';
+      video.className = 'message-media-preview';
+      video.setAttribute('aria-label', safeName);
+
+      card.appendChild(video);
+
+    } else {
+      const link = document.createElement('a');
+
+      link.href = url.href;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = `📎 ${safeName}`;
+      link.className = 'message-file-link';
+
+      card.appendChild(link);
+    }
+  } catch (error) {
+    console.error('[chat] Attachment preview failed:', error);
+
+    card.textContent =
+      'Attachment unavailable. Try reopening the conversation.';
+  }
+}
+
+/** Open an image in an accessible overlay viewer. */
+function openImageViewer(imageUrl, fileName) {
+  let viewer = document.getElementById('image-viewer');
+
+  if (!viewer) {
+    viewer = document.createElement('div');
+    viewer.id = 'image-viewer';
+    viewer.className = 'image-viewer';
+    viewer.hidden = true;
+
+    viewer.innerHTML = `
+      <div
+        class="image-viewer-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Image viewer"
+      >
+        <button
+          type="button"
+          class="image-viewer-close"
+          aria-label="Close image viewer"
+          title="Close"
+        >
+          &times;
+        </button>
+        <img class="image-viewer-image" alt="" />
+        <div class="image-viewer-filename"></div>
+      </div>
+    `;
+
+    document.body.appendChild(viewer);
+
+    viewer.addEventListener('click', (event) => {
+      if (
+        event.target === viewer ||
+        event.target.closest('.image-viewer-close')
+      ) {
+        viewer.hidden = true;
+        document.removeEventListener('keydown', handleViewerKeydown);
+      }
+    });
+  }
+
+  const image = viewer.querySelector('.image-viewer-image');
+  const filename = viewer.querySelector('.image-viewer-filename');
+
+  image.src = imageUrl;
+  image.alt = fileName;
+  filename.textContent = fileName;
+
+  viewer.hidden = false;
+
+  viewer.querySelector('.image-viewer-close').focus();
+
+  document.addEventListener('keydown', handleViewerKeydown);
+}
+
+/** Close the image viewer using Escape. */
+function handleViewerKeydown(event) {
+  if (event.key !== 'Escape') return;
+
+  const viewer = document.getElementById('image-viewer');
+
+  if (viewer && !viewer.hidden) {
+    viewer.hidden = true;
+    document.removeEventListener('keydown', handleViewerKeydown);
+  }
+}
+
 
 /** Rendr the msg list. */
 function renderMessages() {
@@ -738,8 +1089,9 @@ function renderMessages() {
           ${senderName}
 
           <div class="message-content">
-            ${escapeHtml(msg.content)}
+            ${msg.content ? escapeHtml(msg.content) : ''}
           </div>
+          <div class="message-attachments" data-attachments-for="${escapeHtml(msg.id)}"></div>
 
           <div class="message-meta">
             <span class="message-time">${formatTime(msg.createdAt)}</span>
@@ -757,7 +1109,29 @@ function renderMessages() {
       });
     });
   }
+    // Load attachment previews after the message bubbles are rendered.
+  listEl.querySelectorAll('.message-attachments[data-attachments-for]').forEach((container) => {
+    const messageId = container.dataset.attachmentsFor;
+    const message = messages.find((item) => item.id === messageId);
 
+    if (!message?.attachments?.length) {
+      container.remove();
+      return;
+    }
+
+    message.attachments.forEach((attachment) => {
+      // Avoid creating duplicate previews for the same attachment.
+      if (container.querySelector(`[data-attachment-id="${CSS.escape(attachment.id)}"]`)) {
+        return;
+      }
+
+      const wrapper = document.createElement('div');
+      wrapper.dataset.attachmentId = attachment.id;
+      container.appendChild(wrapper);
+
+      renderAttachment(attachment, wrapper);
+    });
+  });
   listEl.scrollTop = listEl.scrollHeight;
 }
 
@@ -772,21 +1146,59 @@ function renderStatusIcon(status) {
 /** Handle sending a message. */
 async function handleSend() {
   const input = document.getElementById('message-input');
+  const sendBtn = document.getElementById('send-btn');
   const content = input.value.trim();
+  const conversationId = activeConversationId;
 
-  if (!content || !activeConversationId) return;
+  if (!conversationId || (!content && !pendingAttachment)) return;
 
-  const sent = sendSocketEvent(EventTypes.MESSAGE_SEND, {
-    conversationId: activeConversationId,
-    content,
-  });
+  const file = pendingAttachment;
 
-  if (!sent) {
-    console.warn('[chat] WebSocket is not connected.');
-    return;
+  sendBtn.disabled = true;
+
+  try {
+    if (file) {
+      await uploadAttachment(conversationId, file, content);
+
+      // Clear the selection only after the upload succeeds.
+      pendingAttachment = null;
+
+      if (pendingAttachmentPreviewUrl) {
+        URL.revokeObjectURL(pendingAttachmentPreviewUrl);
+        pendingAttachmentPreviewUrl = null;
+      }
+
+      const preview = document.getElementById('attachment-preview');
+      const previewContent = document.getElementById('attachment-preview-content');
+
+      if (preview) preview.hidden = true;
+      if (previewContent) previewContent.replaceChildren();
+
+      input.value = '';
+
+      if (activeConversationId === conversationId) {
+        await loadMessages(conversationId);
+      }
+
+      return;
+    }
+
+    const sent = sendSocketEvent(EventTypes.MESSAGE_SEND, {
+      conversationId,
+      content,
+    });
+
+    if (!sent) {
+      throw new Error('Not connected. Please try sending again.');
+    }
+
+    input.value = '';
+  } catch (error) {
+    console.error('[chat] Message send failed:', error);
+    alert(error.message || 'Unable to send. Please try again.');
+  } finally {
+    sendBtn.disabled = false;
   }
-
-  input.value = '';
 }
 
 /** Handle typing indicator. */

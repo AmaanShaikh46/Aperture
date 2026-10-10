@@ -301,6 +301,8 @@ async def upload_attachment(
     # commit merely because a later operation fails.
     try:
         db.add(message)
+        await db.flush()
+        
         db.add(attachment)
         await db.commit()
     except Exception:

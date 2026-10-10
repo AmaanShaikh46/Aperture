@@ -307,6 +307,54 @@
   word-break: break-word;
 }
 
+/* Message attachment layout */
+.message-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+  max-width: 320px;
+  width: 100%;
+}
+
+/* Attachment card */
+.message-attachment {
+  max-width: 320px;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 10px;
+  overflow-wrap: anywhere;
+}
+
+/* Images and videos */
+.message-media-preview {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  max-height: 360px;
+  height: auto;
+  object-fit: contain;
+  border-radius: 10px;
+}
+
+/* Downloadable files */
+.message-file-link {
+  display: block;
+  padding: 12px;
+  border: 1px solid var(--bs-border-color, #dee2e6);
+  border-radius: 10px;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+/* Keep previews within narrow chat bubbles on mobile */
+@media (max-width: 480px) {
+  .message-attachments,
+  .message-attachment {
+    max-width: min(320px, 100%);
+  }
+}
+
 .message-meta {
   display: flex;
   align-items: center;
@@ -382,4 +430,118 @@
 [data-bs-theme="dark"] .reconnecting-banner {
   background-color: #422006;
   color: #fcd34d;
+}
+
+
+/* Attachment preview before sending */
+.attachment-preview {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  margin: 0 12px 8px;
+  border: 1px solid var(--bs-border-color, #dee2e6);
+  border-radius: 12px;
+  background: var(--bs-body-bg, #fff);
+}
+
+.attachment-preview[hidden] {
+  display: none;
+}
+
+#attachment-preview-content {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+}
+
+.attachment-preview-details {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.attachment-selection-image,
+.attachment-selection-video {
+  display: block;
+  width: auto;
+  max-width: 120px;
+  max-height: 100px;
+  height: auto;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+.attachment-selection-icon {
+  font-size: 2rem;
+  flex-shrink: 0;
+}
+
+/* In-app image viewer */
+.image-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.88);
+}
+
+.image-viewer[hidden] {
+  display: none;
+}
+
+.image-viewer-dialog {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.image-viewer-image {
+  display: block;
+  max-width: min(90vw, 1400px);
+  max-height: 82vh;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+.image-viewer-close {
+  position: absolute;
+  top: -42px;
+  right: 0;
+  width: 36px;
+  height: 36px;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.5);
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.image-viewer-filename {
+  max-width: 90vw;
+  overflow-wrap: anywhere;
+  color: #fff;
+  text-align: center;
+  font-size: 0.9rem;
+}
+
+.message-media-preview[role="button"] {
+  cursor: zoom-in;
+}
+
+.message-media-preview[role="button"]:focus-visible {
+  outline: 2px solid var(--bs-primary, #0d6efd);
+  outline-offset: 3px;
 }

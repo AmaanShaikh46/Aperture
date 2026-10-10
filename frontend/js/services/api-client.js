@@ -37,9 +37,15 @@ function handleError(status, detail) {
 export async function apiRequest(method, path, options = {}) {
   let url = buildUrl(path);
   const headers = {
-    'Content-Type': 'application/json',
     ...(options.headers || {}),
   };
+
+  const isFormData =
+    typeof FormData !== 'undefined' && options.body instanceof FormData;
+
+  if (!isFormData && options.body !== undefined) {
+    headers['Content-Type'] ??= 'application/json';
+  }
 
   // Attach auth token if available.
   const token = await auth.getAccessToken();
@@ -50,9 +56,14 @@ export async function apiRequest(method, path, options = {}) {
     headers,
     signal: options.signal,
   };
+
   if (options.body !== undefined && method !== 'GET' && method !== 'HEAD') {
-    init.body = typeof options.body === 'string' ? options.body : JSON.stringify(options.body);
+  init.body =
+    typeof options.body === 'string' || isFormData
+      ? options.body
+      : JSON.stringify(options.body);
   }
+
   if (options.query) {
     const qs = new URLSearchParams(options.query).toString();
     const sep = url.includes('?') ? '&' : '?';
