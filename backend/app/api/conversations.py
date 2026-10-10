@@ -3,6 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.models.attachment import Attachment
 
 from app.core.security import get_current_user
 from app.database.database import get_db
@@ -172,6 +173,19 @@ async def get_conversations(
 
         last_message = result.scalar_one_or_none()
 
+        """ Get attachmnet belonging to the latest message """
+        
+        last_message_attachments = []
+
+        if last_message:
+            attachment_result = await db.execute(
+                select(Attachment)
+                .where(
+                    Attachment.message_id == last_message.id
+                )
+            )
+            last_message_attachments = attachment_result.scalars().all()
+
         response.append({
             "id": str(conversation.id),
             "type": conversation.type,
@@ -202,6 +216,15 @@ async def get_conversations(
                     "content": last_message.content,
                     "createdAt": last_message.created_at,
                     "status": last_message.status,
+                    "attachments": [
+                        {
+                            "id": str(attachment.id),
+                            "fileName": attachment.file_name,
+                            "mimeType": attachment.mime_type,
+                            "size": attachment.file_size,
+                        }
+                        for attachment in last_message_attachments
+                    ],
                 }
                 if last_message
                 else None

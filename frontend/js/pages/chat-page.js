@@ -45,6 +45,7 @@ let explorerDate = '';
 let explorerTab = 'messages';
 let explorerSearch = '';
 
+const attachmentUrlCache = new Map();
 /** Initialize the chat page. */
 export async function initChatPage(container) {
   currentUser = await auth.getUser();
@@ -284,22 +285,34 @@ function renderConversationList() {
           ? lastMsg.attachments
           : [];
 
-        if (caption) {
-          previewText = escapeHtml(caption);
-        } else if (attachments.length > 0) {
+        if (attachments.length > 0) {
           const attachment = attachments[0];
           const mimeType = attachment.mimeType || '';
           const fileName = attachment.fileName || '';
 
+          let icon = '📎';
+          let label = fileName || 'Attachment';
+
           if (mimeType.startsWith('image/')) {
-            previewText = '📷 Photo';
+            icon = '📷';
+            label = 'Photo';
           } else if (mimeType.startsWith('video/')) {
-            previewText = '🎥 Video';
-          } else if (fileName) {
-            previewText = `📎 ${escapeHtml(fileName)}`;
-          } else {
-            previewText = '📎 Attachment';
+            icon = '🎥';
+            label = 'Video';
           }
+
+          // Attachment messages may contain a placeholder instead of a caption.
+          const hasCaption =
+            caption !== '' &&
+            caption.toLowerCase() !== 'message';
+
+          const previewLabel = hasCaption
+            ? escapeHtml(caption)
+            : escapeHtml(label);
+
+          previewText = `${icon} ${previewLabel}`;
+        } else if (caption && caption.toLowerCase() !== 'message') {
+          previewText = escapeHtml(caption);
         } else {
           previewText = '<span class="text-muted">Message</span>';
         }
@@ -307,6 +320,7 @@ function renderConversationList() {
 
       const lastMsgText = previewText;
       const lastMsgTime = lastMsg ? formatDate(lastMsg.createdAt) : '';
+
       const unread = conv.unreadCount > 0 ? `<span class="badge bg-primary rounded-pill">${conv.unreadCount}</span>` : '';
       return `
         <div class="conversation-item ${isActive ? 'active' : ''}" data-conversation-id="${conv.id}" role="button" tabindex="0" aria-label="Open conversation with ${escapeHtml(conv.participantName)}">
@@ -652,7 +666,9 @@ let filteredMessages = messages.filter((msg) => {
 
   if (explorerTab === 'media') {
     tabMatches =
+      (Array.isArray(msg.attachments) && msg.attachments.length > 0) ||
       msg.type === 'image' ||
+      msg.type === 'video' ||
       msg.type === 'file' ||
       msg.type === 'document' ||
       msg.type === 'media' ||
@@ -764,9 +780,60 @@ let filteredMessages = messages.filter((msg) => {
                     || 'Unknown'
                   )}
                 </div>
+
                 <div class="small text-muted">
-                  ${escapeHtml(msg.content || '')}
+                  ${
+                    (msg.content || '').trim() &&
+                    msg.content.trim().toLowerCase() !== 'message'
+                      ? escapeHtml(msg.content)
+                      : ''
+                  }
                 </div>
+
+                ${
+                  Array.isArray(msg.attachments)
+                    ? msg.attachments.map((attachment) => {
+                        const mimeType = attachment.mimeType || '';
+                        const fileName = attachment.fileName || 'Attachment';
+
+                        let icon = 'bi-paperclip';
+                        let label = fileName;
+
+                        if (mimeType.startsWith('image/')) {
+                          icon = 'bi-image';
+                          label = fileName;
+                        } else if (mimeType.startsWith('video/')) {
+                          icon = 'bi-film';
+                          label = fileName;
+                        } else if (mimeType === 'application/pdf') {
+                          icon = 'bi-file-earmark-pdf';
+                        }
+
+                        return `
+
+                        <div class="message-explorer-attachment small">
+                          ${
+                            mimeType.startsWith('image/') || mimeType.startsWith('video/')
+                              ? `
+                                <span
+                                  class="message-explorer-thumbnail"
+                                  data-explorer-attachment-id="${escapeHtml(attachment.id)}"
+                                  data-explorer-mime-type="${escapeHtml(mimeType)}"
+                                  aria-hidden="true"
+                                >
+                                  <i class="bi ${icon}"></i>
+                                </span>
+                              `
+                              : `<i class="bi ${icon} message-explorer-file-icon" aria-hidden="true"></i>`
+                          }
+                          <span class="message-explorer-attachment-name">${escapeHtml(label)}</span>
+                        </div>
+
+                        `;
+                      }).join('')
+                    : ''
+                }
+
                 <div class="small text-muted">
                   ${formatTime(msg.createdAt)}
                 </div>
@@ -826,6 +893,65 @@ let filteredMessages = messages.filter((msg) => {
         jumpToMessage(result.dataset.messageId);
       });
     });
+    // Load image and video thumbnails using the existing attachment URL cache.
+explorer.querySelectorAll('.message-explorer-thumbnail').forEach(async (thumbnail) => {
+  const attachmentId = thumbnail.dataset.explorerAttachmentId;
+  const mimeType = thumbnail.dataset.explorerMimeType;
+
+  if (!attachmentId) return;
+
+  try {
+    let cached = attachmentUrlCache.get(attachmentId);
+    let attachmentUrl;
+
+    if (cached && cached.expiresAt > Date.now()) {
+      attachmentUrl = cached.url;
+    } else {
+      attachmentUrlCache.delete(attachmentId);
+
+      const result = await getAttachmentUrl(attachmentId);
+
+      if (!result?.url) {
+        throw new Error('Attachment URL unavailable');
+      }
+
+      attachmentUrl = result.url;
+
+      attachmentUrlCache.set(attachmentId, {
+        url: attachmentUrl,
+        expiresAt: Date.now() + 4 * 60 * 1000,
+      });
+    }
+
+    const parsedUrl = new URL(attachmentUrl, window.location.origin);
+
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+      throw new Error('Invalid attachment URL');
+    }
+
+    // The Explorer may have been rerendered while the URL was loading.
+    if (!thumbnail.isConnected) return;
+
+    if (mimeType.startsWith('image/')) {
+      const image = document.createElement('img');
+      image.src = parsedUrl.href;
+      image.alt = '';
+      image.loading = 'lazy';
+      image.className = 'message-explorer-thumbnail-image';
+      thumbnail.replaceChildren(image);
+    } else if (mimeType.startsWith('video/')) {
+      const video = document.createElement('video');
+      video.src = parsedUrl.href;
+      video.preload = 'metadata';
+      video.muted = true;
+      video.playsInline = true;
+      video.className = 'message-explorer-thumbnail-video';
+      thumbnail.replaceChildren(video);
+    }
+  } catch (error) {
+    console.error('[chat] Explorer thumbnail failed:', error);
+  }
+});
 }
 
 /** Close the message explorer. */
@@ -880,15 +1006,37 @@ async function renderAttachment(attachment, container) {
   container.appendChild(card);
 
   try {
-    const result = await getAttachmentUrl(attachment.id);
+    const cached = attachmentUrlCache.get(attachment.id);
+    let attachmentUrlString;
 
-    if (!result?.url) {
-      throw new Error('Attachment URL unavailable');
+    // Reuse a URL only while it is safely within its validity period.
+    if (cached && cached.expiresAt > Date.now()) {
+      attachmentUrlString = cached.url;
+    } else {
+      attachmentUrlCache.delete(attachment.id);
+
+      const result = await getAttachmentUrl(attachment.id);
+
+      if (!result?.url) {
+        throw new Error('Attachment URL unavailable');
+      }
+
+      attachmentUrlString = result.url;
+
+      // Backend currently generates signed URLs valid for 5 minutes.
+      // Refresh the URL after 4 minutes to avoid using an expired one.
+      attachmentUrlCache.set(attachment.id, {
+        url: attachmentUrlString,
+        expiresAt: Date.now() + 4 * 60 * 1000,
+      });
     }
 
-    const url = new URL(result.url, window.location.origin);
+    const attachmentUrl = new URL(
+      attachmentUrlString,
+      window.location.origin
+    );
 
-    if (!['http:', 'https:'].includes(url.protocol)) {
+    if (!['http:', 'https:'].includes(attachmentUrl.protocol)) {
       throw new Error('Invalid attachment URL');
     }
 
@@ -901,7 +1049,7 @@ async function renderAttachment(attachment, container) {
     if (mimeType.startsWith('image/')) {
       const image = document.createElement('img');
 
-      image.src = url.href;
+      image.src = attachmentUrl.href;
       image.alt = safeName;
       image.loading = 'lazy';
       image.className = 'message-media-preview';
@@ -909,7 +1057,8 @@ async function renderAttachment(attachment, container) {
       image.setAttribute('role', 'button');
       image.setAttribute('aria-label', `View image: ${safeName}`);
 
-      const openViewer = () => openImageViewer(url.href, safeName);
+      const openViewer = () =>
+        openImageViewer(attachmentUrl.href, safeName);
 
       image.addEventListener('click', openViewer);
 
@@ -925,7 +1074,7 @@ async function renderAttachment(attachment, container) {
     } else if (mimeType.startsWith('video/')) {
       const video = document.createElement('video');
 
-      video.src = url.href;
+      video.src = attachmentUrl.href;
       video.controls = true;
       video.preload = 'metadata';
       video.className = 'message-media-preview';
@@ -936,7 +1085,7 @@ async function renderAttachment(attachment, container) {
     } else {
       const link = document.createElement('a');
 
-      link.href = url.href;
+      link.href = attachmentUrl.href;
       link.target = '_blank';
       link.rel = 'noopener noreferrer';
       link.textContent = `📎 ${safeName}`;
@@ -944,6 +1093,7 @@ async function renderAttachment(attachment, container) {
 
       card.appendChild(link);
     }
+
   } catch (error) {
     console.error('[chat] Attachment preview failed:', error);
 
