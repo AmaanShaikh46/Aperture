@@ -7,6 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.conversation_participants import ConversationParticipant
 from app.models.message import Message
 
+from datetime import datetime, timezone
+from app.models.conversations import Conversation
 
 async def create_message(
     db: AsyncSession,
@@ -14,7 +16,15 @@ async def create_message(
     sender_id: uuid.UUID,
     content: str,
 ):
-    # Make sure sender belongs to the conversation
+    content = content.strip()
+
+    if not content:
+        raise HTTPException(
+            status_code=400,
+            detail="Message content cannot be empty",
+        )
+
+    # Verify the sender belongs to the conversation.
     result = await db.execute(
         select(ConversationParticipant).where(
             ConversationParticipant.conversation_id == conversation_id,
@@ -30,23 +40,39 @@ async def create_message(
             detail="Conversation not found",
         )
 
-    content = content.strip()
-
-    if not content:
-        raise HTTPException(
-            status_code=400,
-            detail="Message content cannot be empty",
+    # Verify the conversation exists.
+    result = await db.execute(
+        select(Conversation).where(
+            Conversation.id == conversation_id
         )
-
-    message = Message(
-        conversation_id=conversation_id,
-        sender_id=sender_id,
-        content=content,
-        status="sent",
     )
 
-    db.add(message)
-    await db.commit()
-    await db.refresh(message)
+    conversation = result.scalar_one_or_none()
 
-    return message
+    if not conversation:
+        raise HTTPException(
+            status_code=404,
+            detail="Conversation not found",
+        )
+
+    try:
+        message = Message(
+            conversation_id=conversation_id,
+            sender_id=sender_id,
+            content=content,
+            status="sent",
+        )
+
+        db.add(message)
+
+        # Update conversation ordering for the conversation list.
+        conversation.updated_at = datetime.now(timezone.utc)
+
+        await db.commit()
+        await db.refresh(message)
+
+        return message
+
+    except Exception:
+        await db.rollback()
+        raise

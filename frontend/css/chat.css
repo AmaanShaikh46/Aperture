@@ -185,6 +185,43 @@
   text-overflow: ellipsis;
 }
 
+/* Distinguish group conversations from direct conversations. */
+.conversation-group-avatar {
+  background-color: var(--aperture-primary);
+  color: #fff;
+}
+
+.conversation-name-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.conversation-name-wrap .conversation-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conversation-kind {
+  flex-shrink: 0;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  border: 1px solid var(--aperture-primary);
+  color: var(--aperture-primary);
+  background-color: rgba(13, 110, 253, 0.1);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.conversation-sender-prefix {
+  font-weight: 600;
+}
+
+
 .conversation-time {
   font-size: 0.75rem;
   color: var(--aperture-text-muted);

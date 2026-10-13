@@ -3,7 +3,11 @@
  * Renders conversation list, chat header, message list, composer,
  * typing indicator, presence, and all empty/loading/error/retry states.
  */
-import { getConversations, createConversation } from '../services/conversation-service.js';
+import {
+  getConversations,
+  createConversation,
+  createGroupConversation,
+} from '../services/conversation-service.js';
 
 import {
   getMessages,
@@ -155,7 +159,19 @@ function openNewChatSearch() {
         >
           <i class="bi bi-arrow-left"></i>
         </button>
+        <div class="flex-grow-1">
         <strong>New Chat</strong>
+        <div class="small text-muted">Start a conversation or create a group</div>
+          </div>
+
+          <button
+            type="button"
+            id="new-group-btn"
+            class="btn btn-sm btn-outline-primary"
+          >
+            <i class="bi bi-people"></i>
+            Create Group
+          </button>
       </div>
 
       <input
@@ -173,6 +189,10 @@ function openNewChatSearch() {
   document
     .getElementById('new-chat-back')
     .addEventListener('click', renderConversationList);
+
+  document
+  .getElementById('new-group-btn')
+  .addEventListener('click', openGroupCreation);
 
   const input = document.getElementById('new-chat-search');
 
@@ -249,6 +269,272 @@ function openNewChatSearch() {
   input.focus();
 }
 
+
+
+/** Render the group-creation interface. */
+function openGroupCreation() {
+  const listEl = document.getElementById('conversation-list');
+
+  const selectedUsers = new Map();
+
+  listEl.innerHTML = `
+    <div class="p-3">
+      <div class="d-flex align-items-center mb-3">
+        <button
+          type="button"
+          id="group-create-back"
+          class="btn btn-sm btn-outline-secondary me-2"
+          aria-label="Back to chats"
+        >
+          <i class="bi bi-arrow-left"></i>
+        </button>
+
+        <strong>Create Group</strong>
+      </div>
+
+      <label for="group-name" class="form-label">Group name</label>
+
+      <input
+        id="group-name"
+        type="text"
+        class="form-control mb-3"
+        maxlength="100"
+        placeholder="Enter a group name"
+        autocomplete="off"
+      />
+
+      <label for="group-user-search" class="form-label">
+        Add participants
+      </label>
+
+      <input
+        id="group-user-search"
+        type="search"
+        class="form-control"
+        placeholder="Search by name or username..."
+        autocomplete="off"
+      />
+
+      <div id="group-selected-users" class="mt-3"></div>
+
+      <div id="group-user-results" class="mt-3"></div>
+
+      <div id="group-create-error" class="text-danger small mt-2"></div>
+
+      <button
+        type="button"
+        id="group-create-submit"
+        class="btn btn-primary w-100 mt-3"
+        disabled
+      >
+        <i class="bi bi-people"></i>
+        Create Group
+      </button>
+    </div>
+  `;
+
+  const nameInput = document.getElementById('group-name');
+  const searchInput = document.getElementById('group-user-search');
+  const selectedEl = document.getElementById('group-selected-users');
+  const resultsEl = document.getElementById('group-user-results');
+  const errorEl = document.getElementById('group-create-error');
+  const submitButton = document.getElementById('group-create-submit');
+
+  document
+    .getElementById('group-create-back')
+    .addEventListener('click', openNewChatSearch);
+
+  function renderSelectedUsers() {
+    if (selectedUsers.size === 0) {
+      selectedEl.innerHTML = `
+        <div class="small text-muted">No participants selected.</div>
+      `;
+    } else {
+      selectedEl.innerHTML = `
+        <div class="small fw-semibold mb-2">
+          Selected participants (${selectedUsers.size})
+        </div>
+
+        <div class="d-flex flex-wrap gap-2">
+          ${[...selectedUsers.values()].map((user) => `
+            <button
+              type="button"
+              class="btn btn-sm btn-outline-secondary"
+              data-remove-group-user="${escapeHtml(user.id)}"
+              aria-label="Remove ${escapeHtml(user.displayName)}"
+            >
+              ${escapeHtml(user.displayName)}
+              <i class="bi bi-x"></i>
+            </button>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    selectedEl
+      .querySelectorAll('[data-remove-group-user]')
+      .forEach((button) => {
+        button.addEventListener('click', () => {
+          selectedUsers.delete(button.dataset.removeGroupUser);
+          errorEl.textContent = '';
+          renderSelectedUsers();
+          renderUserResults();
+        });
+      });
+
+    submitButton.disabled =
+      !nameInput.value.trim() ||
+      selectedUsers.size < 2;
+  }
+
+  function renderUserResults(users = []) {
+    resultsEl.innerHTML = users.map((user) => {
+      const selected = selectedUsers.has(user.id);
+
+      return `
+        <button
+          type="button"
+          class="w-100 border-0 bg-transparent text-start p-2 d-flex align-items-center"
+          data-group-user-id="${escapeHtml(user.id)}"
+          ${selected ? 'disabled' : ''}
+        >
+          <div
+            class="avatar avatar-sm me-2"
+            style="background-color:${avatarColor(user.displayName)}"
+          >
+            ${getInitials(user.displayName)}
+          </div>
+
+          <div class="flex-grow-1">
+            <div class="fw-semibold">
+              ${escapeHtml(user.displayName)}
+            </div>
+            <div class="text-muted small">
+              @${escapeHtml(user.username || '')}
+            </div>
+          </div>
+
+          <i class="bi ${selected ? 'bi-check-circle-fill' : 'bi-plus-circle'}"></i>
+        </button>
+      `;
+    }).join('');
+
+    resultsEl
+      .querySelectorAll('[data-group-user-id]')
+      .forEach((button) => {
+        button.addEventListener('click', () => {
+          const user = users.find(
+            (item) => item.id === button.dataset.groupUserId
+          );
+
+          if (!user || selectedUsers.has(user.id)) return;
+
+          selectedUsers.set(user.id, user);
+          errorEl.textContent = '';
+
+          renderSelectedUsers();
+          renderUserResults(users);
+        });
+      });
+  }
+
+  const searchUsersDebounced = debounce(async (event) => {
+    const query = event.target.value.trim();
+
+    errorEl.textContent = '';
+
+    if (!query) {
+      resultsEl.innerHTML = '';
+      return;
+    }
+
+    resultsEl.innerHTML = `
+      <div class="small text-muted">Searching...</div>
+    `;
+
+    try {
+      const users = await searchUsers(query);
+
+      if (!users.length) {
+        resultsEl.innerHTML = `
+          <div class="small text-muted">No users found.</div>
+        `;
+        return;
+      }
+
+      // Exclude the logged-in user from selectable participants.
+      const eligibleUsers = users.filter(
+        (user) => user.id !== currentUser.id
+      );
+
+      renderUserResults(eligibleUsers);
+    } catch (error) {
+      console.error('[chat] Group participant search failed:', error);
+
+      resultsEl.innerHTML = `
+        <div class="text-danger small">
+          Could not search users. Please try again.
+        </div>
+      `;
+    }
+  }, 300);
+
+  searchInput.addEventListener('input', searchUsersDebounced);
+
+  nameInput.addEventListener('input', renderSelectedUsers);
+
+  submitButton.addEventListener('click', async () => {
+    const name = nameInput.value.trim();
+    const participantIds = [...selectedUsers.keys()];
+
+    if (!name) {
+      errorEl.textContent = 'Enter a group name.';
+      nameInput.focus();
+      return;
+    }
+
+    if (participantIds.length < 2) {
+      errorEl.textContent = 'Select at least two other people.';
+      return;
+    }
+
+    submitButton.disabled = true;
+    submitButton.innerHTML = `
+      <span class="spinner-border spinner-border-sm me-2"></span>
+      Creating group...
+    `;
+
+    errorEl.textContent = '';
+
+    try {
+      const conversation = await createGroupConversation(
+        name,
+        participantIds
+      );
+
+      await loadConversations();
+      await openConversation(conversation.id);
+    } catch (error) {
+      console.error('[chat] Group creation failed:', error);
+
+      errorEl.textContent =
+        error.message || 'Could not create the group. Please try again.';
+
+      submitButton.innerHTML = `
+        <i class="bi bi-people"></i>
+        Create Group
+      `;
+
+      renderSelectedUsers();
+    }
+  });
+
+  renderSelectedUsers();
+  nameInput.focus();
+}
+
+
+
 /** Load and render the conversation list. */
 async function loadConversations() {
   const listEl = document.getElementById('conversation-list');
@@ -263,24 +549,46 @@ async function loadConversations() {
 }
 
 /** Render the conversation list. */
+/** Render direct and group conversations distinctly. */
 function renderConversationList() {
   const listEl = document.getElementById('conversation-list');
+
   if (!conversations || conversations.length === 0) {
-    listEl.innerHTML = `<div class="empty-state"><i class="bi bi-chat-square-text"></i><p>No conversations yet</p></div>`;
+    listEl.innerHTML = `
+      <div class="empty-state">
+        <i class="bi bi-chat-square-text"></i>
+        <p>No conversations yet</p>
+      </div>
+    `;
     return;
   }
+
   listEl.innerHTML = conversations
     .map((conv) => {
       const isActive = conv.id === activeConversationId;
-      const initials = getInitials(conv.participantName);
-      const color = avatarColor(conv.participantName);
+      const isGroup = conv.type === 'group';
 
+      const displayName = isGroup
+        ? (conv.name || conv.participantName || 'Unnamed Group')
+        : (conv.participantName || 'Unknown');
+
+      const participants = Array.isArray(conv.participants)
+        ? conv.participants
+        : [];
+
+      const memberCount = participants.length;
+
+      const initials = getInitials(displayName);
+      const color = avatarColor(displayName);
       const lastMsg = conv.lastMessage;
 
-      let previewText = '<span class="text-muted">No messages yet</span>';
+      let previewText = isGroup && memberCount > 0
+        ? `<span class="text-muted">${memberCount} members · No messages yet</span>`
+        : '<span class="text-muted">No messages yet</span>';
 
       if (lastMsg) {
         const caption = (lastMsg.content || '').trim();
+
         const attachments = Array.isArray(lastMsg.attachments)
           ? lastMsg.attachments
           : [];
@@ -301,7 +609,6 @@ function renderConversationList() {
             label = 'Video';
           }
 
-          // Attachment messages may contain a placeholder instead of a caption.
           const hasCaption =
             caption !== '' &&
             caption.toLowerCase() !== 'message';
@@ -311,38 +618,120 @@ function renderConversationList() {
             : escapeHtml(label);
 
           previewText = `${icon} ${previewLabel}`;
-        } else if (caption && caption.toLowerCase() !== 'message') {
+        } else if (
+          caption &&
+          caption.toLowerCase() !== 'message'
+        ) {
           previewText = escapeHtml(caption);
         } else {
           previewText = '<span class="text-muted">Message</span>';
         }
+
+        // Prefix the latest message with its sender in group chats.
+        if (isGroup) {
+          const sender = participants.find(
+            (participant) => participant.id === lastMsg.senderId
+          );
+
+          const senderName =
+            lastMsg.senderId === currentUser?.id
+              ? 'You'
+              : sender?.displayName;
+
+          if (senderName) {
+            previewText = `
+              <span class="conversation-sender-prefix">
+                ${escapeHtml(senderName)}:
+              </span>
+              ${previewText}
+            `;
+          }
+        }
       }
 
-      const lastMsgText = previewText;
-      const lastMsgTime = lastMsg ? formatDate(lastMsg.createdAt) : '';
+      const lastMsgTime = lastMsg
+        ? formatDate(lastMsg.createdAt)
+        : '';
 
-      const unread = conv.unreadCount > 0 ? `<span class="badge bg-primary rounded-pill">${conv.unreadCount}</span>` : '';
+      const unread = conv.unreadCount > 0
+        ? `
+          <span class="badge bg-primary rounded-pill">
+            ${conv.unreadCount}
+          </span>
+        `
+        : '';
+
+      const avatar = isGroup
+        ? `
+          <div
+            class="avatar conversation-group-avatar"
+            aria-hidden="true"
+          >
+            <i class="bi bi-people-fill"></i>
+          </div>
+        `
+        : `
+          <div
+            class="avatar"
+            style="background-color:${color}"
+            aria-hidden="true"
+          >
+            ${initials}
+          </div>
+        `;
+
       return `
-        <div class="conversation-item ${isActive ? 'active' : ''}" data-conversation-id="${conv.id}" role="button" tabindex="0" aria-label="Open conversation with ${escapeHtml(conv.participantName)}">
-          <div class="avatar" style="background-color:${color}">${initials}</div>
+        <div
+          class="conversation-item ${isActive ? 'active' : ''}"
+          data-conversation-id="${escapeHtml(conv.id)}"
+          role="button"
+          tabindex="0"
+          aria-label="Open ${isGroup ? 'group' : 'conversation'}: ${escapeHtml(displayName)}"
+        >
+          ${avatar}
+
           <div class="conversation-meta">
             <div class="conversation-top-row">
-              <span class="conversation-name">${escapeHtml(conv.participantName)}</span>
-              <span class="conversation-time">${lastMsgTime}</span>
+              <div class="conversation-name-wrap">
+                <span class="conversation-name">
+                  ${escapeHtml(displayName)}
+                </span>
+
+                ${
+                  isGroup
+                    ? '<span class="conversation-kind">GROUP</span>'
+                    : ''
+                }
+              </div>
+
+              <span class="conversation-time">
+                ${lastMsgTime}
+              </span>
             </div>
+
             <div class="conversation-bottom-row">
-              <span class="conversation-preview">${lastMsgText}</span>
+              <span class="conversation-preview">
+                ${previewText}
+              </span>
+
               ${unread}
             </div>
           </div>
-        </div>`;
+        </div>
+      `;
     })
     .join('');
 
   listEl.querySelectorAll('.conversation-item').forEach((el) => {
-    el.addEventListener('click', () => openConversation(el.dataset.conversationId));
-    el.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openConversation(el.dataset.conversationId); }
+    el.addEventListener('click', () => {
+      openConversation(el.dataset.conversationId);
+    });
+
+    el.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        openConversation(el.dataset.conversationId);
+      }
     });
   });
 }
@@ -444,26 +833,91 @@ async function openConversation(conversationId) {
       hidden
     ></aside>`;
 
-  const conv = conversations.find((c) => c.id === conversationId);
-  if (conv) {
-    const nameEl = document.getElementById('chat-header-name');
-    const avatarEl = document.getElementById('chat-header-avatar');
-    nameEl.textContent = conv.participantName;
-    avatarEl.textContent = getInitials(conv.participantName);
-    avatarEl.style.backgroundColor = avatarColor(conv.participantName);
-    conv.unreadCount = 0;
-    renderConversationList();
-    // Load presence
-    try {
-      const presence = await getPresence(conv.participantId);
+    const conv = conversations.find((c) => c.id === conversationId);
+
+    if (conv) {
+      const isGroup = conv.type === 'group';
+
+      const displayName = isGroup
+        ? (conv.name || conv.participantName || 'Unnamed Group')
+        : (conv.participantName || 'Unknown');
+
+      const nameEl = document.getElementById('chat-header-name');
+      const avatarEl = document.getElementById('chat-header-avatar');
       const statusEl = document.getElementById('chat-header-status');
-      if (presence.presence === 'online') {
-        statusEl.innerHTML = '<span class="presence-dot online"></span> Online';
+
+      nameEl.textContent = displayName;
+
+      if (isGroup) {
+        // Display a group icon instead of an individual's initials.
+        avatarEl.classList.add('conversation-group-avatar');
+        avatarEl.innerHTML = '<i class="bi bi-people-fill" aria-hidden="true"></i>';
+        avatarEl.setAttribute('aria-label', 'Group conversation');
+
+        // Use the participants supplied by the backend.
+        const participants = Array.isArray(conv.participants)
+          ? conv.participants
+          : [];
+
+        const participantNames = participants
+          .map((participant) =>
+            (participant.displayName || participant.username || '').trim()
+          )
+          .filter(Boolean);
+
+        const memberCount = participants.length;
+        const visibleNames = participantNames.slice(0, 3);
+        const additionalCount = Math.max(
+          participantNames.length - visibleNames.length,
+          0
+        );
+
+        let memberSummary = visibleNames.join(', ');
+
+        if (additionalCount > 0) {
+          memberSummary += ` +${additionalCount} more`;
+        }
+
+        // Example: "3 members · Amaan, Ishwarsingh, Shivratn"
+        statusEl.textContent = [
+          `${memberCount} ${memberCount === 1 ? 'member' : 'members'}`,
+          memberSummary,
+        ].filter(Boolean).join(' · ');
+
+        // Expose the complete names when the subtitle is truncated.
+        statusEl.title = participantNames.join(', ');
+        statusEl.setAttribute('aria-label', statusEl.textContent);
       } else {
-        statusEl.innerHTML = `<span class="presence-dot offline"></span> Last seen ${formatLastSeen(presence.lastSeen)}`;
+        // Preserve the existing direct-chat avatar behavior.
+        avatarEl.classList.remove('conversation-group-avatar');
+        avatarEl.textContent = getInitials(displayName);
+        avatarEl.style.backgroundColor = avatarColor(displayName);
+        avatarEl.removeAttribute('aria-label');
+
+        // Presence applies to individual conversations, not groups.
+        statusEl.textContent = '';
+
+        if (conv.participantId) {
+          try {
+            const presence = await getPresence(conv.participantId);
+
+            if (presence.presence === 'online') {
+              statusEl.innerHTML =
+                '<span class="presence-dot online"></span> Online';
+            } else {
+              statusEl.textContent =
+                `Last seen ${formatLastSeen(presence.lastSeen)}`;
+            }
+          } catch (error) {
+            // A presence lookup failure must not prevent the chat from opening.
+            statusEl.textContent = '';
+          }
+        }
       }
-    } catch (e) { /* ignore */ }
-  }
+
+      conv.unreadCount = 0;
+      renderConversationList();
+    }
 
   await loadMessages(conversationId);
 
