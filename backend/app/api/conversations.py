@@ -1,9 +1,15 @@
 import uuid
 
+import logging
+
+from app.services.connection_manager import manager
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.attachment import Attachment
+
+from datetime import datetime, timezone
 
 from app.core.security import get_current_user
 from app.database.database import get_db
@@ -15,6 +21,7 @@ from app.models.message import Message
 
 router = APIRouter()
 
+logger = logging.getLogger(__name__)
 
 @router.post("/conversations")
 async def create_conversation(
@@ -50,7 +57,7 @@ async def create_conversation(
                 detail="participantIds must be a list",
             )
 
-        if len(participant_ids_raw) < 2:
+        if len(participant_ids_raw) < 1:
             raise HTTPException(
                 status_code=400,
                 detail="A group requires at least two other participants",
@@ -492,3 +499,435 @@ async def get_conversation(
         "lastMessage": None,
         "unreadCount": 0,
     }
+
+@router.patch("/conversations/{conversation_id}/name")
+async def rename_group_conversation(
+    conversation_id: uuid.UUID,
+    data: dict,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Rename a group conversation. Only group admins may do this."""
+    current_user_id = uuid.UUID(current_user["id"])
+
+    # Validate the new group name.
+    name = data.get("name")
+
+    if not isinstance(name, str) or not name.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Group name is required",
+        )
+
+    name = name.strip()
+
+    if len(name) > 100:
+        raise HTTPException(
+            status_code=400,
+            detail="Group name cannot exceed 100 characters",
+        )
+
+    # Find the conversation and verify the current user's membership.
+    result = await db.execute(
+        select(Conversation, ConversationParticipant.role)
+        .join(
+            ConversationParticipant,
+            ConversationParticipant.conversation_id == Conversation.id,
+        )
+        .where(
+            Conversation.id == conversation_id,
+            ConversationParticipant.user_id == current_user_id,
+        )
+    )
+
+    row = result.one_or_none()
+
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Conversation not found",
+        )
+
+    conversation, role = row
+
+    # This endpoint is only for group conversations.
+    if conversation.type != "group":
+        raise HTTPException(
+            status_code=400,
+            detail="This operation is only available for group conversations",
+        )
+
+    # Only admins may rename the group.
+    if role != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Only group admins can rename the group",
+        )
+
+    # Save the change.
+    conversation.name = name
+    conversation.updated_at = datetime.now(timezone.utc)
+
+    try:
+        await db.commit()
+        await db.refresh(conversation)
+    except Exception:
+        await db.rollback()
+        raise
+        # Notify every connected group member about the renamed group.
+    try:
+        result = await db.execute(
+            select(ConversationParticipant.user_id).where(
+                ConversationParticipant.conversation_id == conversation.id
+            )
+        )
+
+        event = {
+            "type": "group.updated",
+            "payload": {
+                "conversationId": str(conversation.id),
+                "name": conversation.name,
+                "updatedAt": (
+                    conversation.updated_at.isoformat()
+                    if conversation.updated_at
+                    else None
+                ),
+            },
+        }
+
+        for recipient_id in result.scalars().all():
+            await manager.send_to_user(str(recipient_id), event)
+
+    except Exception:
+        logger.exception(
+            "Failed to broadcast group rename for conversation %s",
+            conversation.id,
+        )
+    return {
+        "id": str(conversation.id),
+        "type": conversation.type,
+        "name": conversation.name,
+        "updatedAt": conversation.updated_at,
+    }
+
+@router.post("/conversations/{conversation_id}/participants")
+async def add_group_participants(
+    conversation_id: uuid.UUID,
+    data: dict,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add members to a group. Only group admins may do this."""
+    current_user_id = uuid.UUID(current_user["id"])
+
+    # Validate the supplied participant IDs.
+    participant_ids_raw = data.get("participantIds")
+
+    if not isinstance(participant_ids_raw, list) or not participant_ids_raw:
+        raise HTTPException(
+            status_code=400,
+            detail="participantIds must be a non-empty list",
+        )
+
+    if len(participant_ids_raw) > 100:
+        raise HTTPException(
+            status_code=400,
+            detail="You cannot add more than 100 participants at once",
+        )
+
+    try:
+        participant_ids = [
+            uuid.UUID(value) for value in participant_ids_raw
+        ]
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(
+            status_code=400,
+            detail="One or more participant IDs are invalid",
+        )
+
+    if len(set(participant_ids)) != len(participant_ids):
+        raise HTTPException(
+            status_code=400,
+            detail="Duplicate participants are not allowed",
+        )
+
+    if current_user_id in participant_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="You are already a group member",
+        )
+
+    # Verify the conversation exists and the user belongs to it.
+    result = await db.execute(
+        select(Conversation, ConversationParticipant.role)
+        .join(
+            ConversationParticipant,
+            ConversationParticipant.conversation_id == Conversation.id,
+        )
+        .where(
+            Conversation.id == conversation_id,
+            ConversationParticipant.user_id == current_user_id,
+        )
+    )
+
+    row = result.one_or_none()
+
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Conversation not found",
+        )
+
+    conversation, role = row
+
+    if conversation.type != "group":
+        raise HTTPException(
+            status_code=400,
+            detail="Members can only be added to group conversations",
+        )
+
+    if role != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Only group admins can add members",
+        )
+
+    # Verify that every selected user has a profile.
+    profile_result = await db.execute(
+        select(Profile).where(Profile.id.in_(participant_ids))
+    )
+    profiles = profile_result.scalars().all()
+    profiles_by_id = {profile.id: profile for profile in profiles}
+
+    if set(profiles_by_id) != set(participant_ids):
+        raise HTTPException(
+            status_code=400,
+            detail="One or more participants do not exist",
+        )
+
+    # Find current members so nobody is inserted twice.
+    existing_result = await db.execute(
+        select(ConversationParticipant.user_id).where(
+            ConversationParticipant.conversation_id == conversation_id
+        )
+    )
+    existing_ids = set(existing_result.scalars().all())
+
+    new_ids = [
+        participant_id
+        for participant_id in participant_ids
+        if participant_id not in existing_ids
+    ]
+
+    if len(existing_ids) + len(new_ids) > 101:
+        raise HTTPException(
+            status_code=400,
+            detail="A group cannot have more than 101 members",
+        )
+
+    # Persist all new memberships in one transaction.
+    if new_ids:
+        db.add_all(
+            [
+                ConversationParticipant(
+                    conversation_id=conversation_id,
+                    user_id=participant_id,
+                    role="member",
+                )
+                for participant_id in new_ids
+            ]
+        )
+
+        conversation.updated_at = datetime.now(timezone.utc)
+
+        try:
+            await db.commit()
+            await db.refresh(conversation)
+        except Exception:
+            await db.rollback()
+            raise
+
+    # Load the complete participant list after the database update.
+    participant_result = await db.execute(
+        select(Profile, ConversationParticipant.role)
+        .join(
+            ConversationParticipant,
+            ConversationParticipant.user_id == Profile.id,
+        )
+        .where(
+            ConversationParticipant.conversation_id == conversation_id
+        )
+    )
+    participant_rows = participant_result.all()
+
+    participants = [
+        {
+            "id": str(profile.id),
+            "displayName": (
+                profile.display_name or profile.username or "Unknown"
+            ),
+            "avatarUrl": profile.avatar_url,
+            "role": participant_role,
+        }
+        for profile, participant_role in participant_rows
+    ]
+
+    payload = {
+        "conversationId": str(conversation.id),
+        "name": conversation.name,
+        "updatedAt": (
+            conversation.updated_at.isoformat()
+            if conversation.updated_at
+            else None
+        ),
+        "addedMemberIds": [str(user_id) for user_id in new_ids],
+        "participants": participants,
+    }
+
+    # Notify all current members, including the newly added users.
+    # A notification failure must not undo the database transaction.
+    if new_ids:
+        event = {
+            "type": "group.members_added",
+            "payload": payload,
+        }
+
+        for profile, _participant_role in participant_rows:
+            try:
+                await manager.send_to_user(str(profile.id), event)
+            except Exception:
+                logger.exception(
+                    "Failed to broadcast group membership update "
+                    "for conversation %s to user %s",
+                    conversation.id,
+                    profile.id,
+                )
+
+    return payload
+
+@router.delete("/conversations/{conversation_id}/participants/{participant_id}")
+async def remove_group_participant(
+    conversation_id: uuid.UUID,
+    participant_id: uuid.UUID,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove a regular member from a group. Only admins may do this."""
+    current_user_id = uuid.UUID(current_user["id"])
+
+    if participant_id == current_user_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Admins cannot remove themselves. Admin transfer is not available yet.",
+        )
+
+    # Verify the requester is a member and retrieve their role.
+    result = await db.execute(
+        select(Conversation, ConversationParticipant.role)
+        .join(
+            ConversationParticipant,
+            ConversationParticipant.conversation_id == Conversation.id,
+        )
+        .where(
+            Conversation.id == conversation_id,
+            ConversationParticipant.user_id == current_user_id,
+        )
+    )
+    row = result.one_or_none()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    conversation, requester_role = row
+
+    if conversation.type != "group":
+        raise HTTPException(
+            status_code=400,
+            detail="Members can only be removed from group conversations",
+        )
+
+    if requester_role != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Only group admins can remove members",
+        )
+
+    # Find the target membership. Do not allow removal of an administrator.
+    target_result = await db.execute(
+        select(ConversationParticipant).where(
+            ConversationParticipant.conversation_id == conversation_id,
+            ConversationParticipant.user_id == participant_id,
+        )
+    )
+    target_membership = target_result.scalar_one_or_none()
+
+    if target_membership is None:
+        raise HTTPException(
+            status_code=404,
+            detail="That user is not a member of this group",
+        )
+
+    if target_membership.role == "admin":
+        raise HTTPException(
+            status_code=400,
+            detail="Administrators cannot be removed. Transfer admin role first.",
+        )
+
+    # Commit the membership removal before sending notifications.
+    await db.delete(target_membership)
+    conversation.updated_at = datetime.now(timezone.utc)
+
+    try:
+        await db.commit()
+        await db.refresh(conversation)
+    except Exception:
+        await db.rollback()
+        raise
+
+    # Build the authoritative remaining-member list.
+    participant_result = await db.execute(
+        select(Profile, ConversationParticipant.role)
+        .join(
+            ConversationParticipant,
+            ConversationParticipant.user_id == Profile.id,
+        )
+        .where(ConversationParticipant.conversation_id == conversation_id)
+    )
+    participant_rows = participant_result.all()
+
+    participants = [
+        {
+            "id": str(profile.id),
+            "displayName": profile.display_name or profile.username or "Unknown",
+            "avatarUrl": profile.avatar_url,
+            "role": member_role,
+        }
+        for profile, member_role in participant_rows
+    ]
+
+    payload = {
+        "conversationId": str(conversation.id),
+        "name": conversation.name,
+        "updatedAt": conversation.updated_at.isoformat() if conversation.updated_at else None,
+        "removedMemberId": str(participant_id),
+        "participants": participants,
+    }
+    event = {"type": "group.members_removed", "payload": payload}
+
+    # Notify remaining members and the removed user. Notification failure
+    # must not roll back the already-committed membership change.
+    recipient_ids = {str(profile.id) for profile, _role in participant_rows}
+    recipient_ids.add(str(participant_id))
+
+    for recipient_id in recipient_ids:
+        try:
+            await manager.send_to_user(recipient_id, event)
+        except Exception:
+            logger.exception(
+                "Failed to broadcast member removal for conversation %s to user %s",
+                conversation.id,
+                recipient_id,
+            )
+
+    return payload
+

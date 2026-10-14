@@ -2,7 +2,7 @@
  * APERTURE - Conversation Service
  */
 import { USE_MOCK_API } from '../config.js';
-import { get, post } from './api-client.js';
+import { get, post, patch, deleteRequest } from './api-client.js';
 import {
   mockConversations,
   mockUsers,
@@ -44,9 +44,7 @@ export async function createConversation(userId) {
 
 /**
  * Create a group conversation with the current user as its administrator.
- *
  * participantIds contains the IDs of the other users to add.
- * The backend remains responsible for authoritative validation.
  */
 export async function createGroupConversation(name, participantIds) {
   if (typeof name !== 'string' || !name.trim()) {
@@ -64,8 +62,8 @@ export async function createGroupConversation(name, participantIds) {
     throw new Error('Group name cannot exceed 100 characters.');
   }
 
-  if (uniqueParticipantIds.length < 2) {
-    throw new Error('Select at least two other people for the group.');
+  if (uniqueParticipantIds.length < 1) {
+    throw new Error('Select at least one other person for the group.');
   }
 
   if (uniqueParticipantIds.length > 100) {
@@ -74,10 +72,7 @@ export async function createGroupConversation(name, participantIds) {
 
   if (USE_MOCK_API) {
     const selectedIds = new Set(uniqueParticipantIds);
-
-    const selectedUsers = mockUsers.filter(
-      (user) => selectedIds.has(user.id)
-    );
+    const selectedUsers = mockUsers.filter((user) => selectedIds.has(user.id));
 
     if (selectedUsers.length !== selectedIds.size) {
       throw new Error('One or more selected users could not be found.');
@@ -99,7 +94,6 @@ export async function createGroupConversation(name, participantIds) {
     ];
 
     const now = new Date().toISOString();
-
     const conversation = {
       id: `conv-${uuid().slice(0, 8)}`,
       type: 'group',
@@ -115,11 +109,7 @@ export async function createGroupConversation(name, participantIds) {
     };
 
     mockConversations.unshift(conversation);
-
-    return {
-      ...conversation,
-      participants: [...participants],
-    };
+    return { ...conversation, participants: [...participants] };
   }
 
   return post('/api/conversations', {
@@ -141,14 +131,138 @@ export async function getConversations() {
 /** Get a single conversation by ID. */
 export async function getConversation(conversationId) {
   if (USE_MOCK_API) {
-    const conversation = mockConversations.find(
-      (c) => c.id === conversationId
-    );
-
+    const conversation = mockConversations.find((c) => c.id === conversationId);
     return conversation ? { ...conversation } : null;
   }
 
   return get(`/api/conversations/${conversationId}`);
+}
+
+/** Rename a group conversation. */
+export async function renameGroupConversation(conversationId, name) {
+  const trimmedName = String(name ?? '').trim();
+
+  if (!trimmedName) throw new Error('Group name is required.');
+  if (trimmedName.length > 100) {
+    throw new Error('Group name cannot exceed 100 characters.');
+  }
+
+  if (USE_MOCK_API) {
+    const conversation = mockConversations.find((item) => item.id === conversationId);
+    if (!conversation) throw new Error('Conversation not found.');
+    if (conversation.type !== 'group') throw new Error('Only groups can be renamed.');
+
+    conversation.name = trimmedName;
+    conversation.participantName = trimmedName;
+    conversation.updatedAt = new Date().toISOString();
+    return { ...conversation };
+  }
+
+  return patch(
+    `/api/conversations/${encodeURIComponent(conversationId)}/name`,
+    { name: trimmedName }
+  );
+}
+
+/** Add members to an existing group conversation. */
+export async function addGroupParticipants(conversationId, participantIds) {
+  if (!Array.isArray(participantIds) || participantIds.length === 0) {
+    throw new Error('Select at least one person to add.');
+  }
+
+  const uniqueIds = [...new Set(participantIds)];
+  if (uniqueIds.some((id) => typeof id !== 'string' || !id.trim())) {
+    throw new Error('One or more participant IDs are invalid.');
+  }
+  if (uniqueIds.length > 100) {
+    throw new Error('You cannot add more than 100 participants at once.');
+  }
+
+  if (USE_MOCK_API) {
+    const conversation = mockConversations.find((item) => item.id === conversationId);
+    if (!conversation) throw new Error('Conversation not found.');
+    if (conversation.type !== 'group') throw new Error('Members can only be added to groups.');
+
+    const participants = conversation.participants || [];
+    const existingIds = new Set(participants.map((participant) => String(participant.id)));
+    const selectedIds = new Set(uniqueIds);
+    const selectedUsers = mockUsers.filter((user) => selectedIds.has(String(user.id)));
+
+    if (selectedUsers.length !== selectedIds.size) {
+      throw new Error('One or more selected users could not be found.');
+    }
+
+    const newUsers = selectedUsers.filter((user) => !existingIds.has(String(user.id)));
+    if (participants.length + newUsers.length > 101) {
+      throw new Error('A group cannot have more than 101 members.');
+    }
+
+    if (newUsers.length > 0) {
+      conversation.participants = [
+        ...participants,
+        ...newUsers.map((user) => ({
+          id: user.id,
+          displayName: user.displayName,
+          avatarUrl: user.avatarUrl || null,
+          role: 'member',
+        })),
+      ];
+      conversation.updatedAt = new Date().toISOString();
+    }
+
+    return { ...conversation, participants: [...(conversation.participants || [])] };
+  }
+
+  return post(
+    `/api/conversations/${encodeURIComponent(conversationId)}/participants`,
+    { participantIds: uniqueIds }
+  );
+}
+
+/** Remove a regular member from a group. Only admins may do this. */
+export async function removeGroupParticipant(conversationId, participantId) {
+  const memberId = String(participantId ?? '').trim();
+  if (!memberId) throw new Error('Select a group member to remove.');
+
+  if (USE_MOCK_API) {
+    const conversation = mockConversations.find((item) => item.id === conversationId);
+    if (!conversation) throw new Error('Conversation not found.');
+    if (conversation.type !== 'group') throw new Error('Members can only be removed from groups.');
+
+    const participants = conversation.participants || [];
+    const currentUser = participants.find(
+      (participant) => String(participant.id) === String(mockCurrentUser.id)
+    );
+    if (currentUser?.role !== 'admin') {
+      throw new Error('Only group admins can remove members.');
+    }
+    if (memberId === String(mockCurrentUser.id)) {
+      throw new Error('Admins cannot remove themselves.');
+    }
+
+    const target = participants.find((participant) => String(participant.id) === memberId);
+    if (!target) throw new Error('That user is not a member of this group.');
+    if (String(target.role).toLowerCase() === 'admin') {
+      throw new Error('Administrators cannot be removed. Transfer admin role first.');
+    }
+
+    conversation.participants = participants.filter(
+      (participant) => String(participant.id) !== memberId
+    );
+    conversation.updatedAt = new Date().toISOString();
+
+    return {
+      conversationId: String(conversation.id),
+      name: conversation.name,
+      updatedAt: conversation.updatedAt,
+      removedMemberId: memberId,
+      participants: [...conversation.participants],
+    };
+  }
+
+  return deleteRequest(
+    `/api/conversations/${encodeURIComponent(conversationId)}/participants/${encodeURIComponent(memberId)}`
+  );
 }
 
 export default {
@@ -156,4 +270,7 @@ export default {
   createGroupConversation,
   getConversations,
   getConversation,
+  renameGroupConversation,
+  addGroupParticipants,
+  removeGroupParticipant,
 };

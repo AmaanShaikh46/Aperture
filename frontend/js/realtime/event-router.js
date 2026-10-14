@@ -27,6 +27,7 @@ export function route(eventType, payload) {
 
 export const EventTypes = {
   // Server -> Client
+  GROUP_UPDATED: 'group.updated',
   MESSAGE_NEW: 'message.new',
   PROFILE_UPDATED: 'profile.updated',
   MESSAGE_DELIVERED: 'message.delivered',

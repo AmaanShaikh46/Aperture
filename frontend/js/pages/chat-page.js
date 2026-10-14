@@ -7,6 +7,9 @@ import {
   getConversations,
   createConversation,
   createGroupConversation,
+  renameGroupConversation,
+  addGroupParticipants,
+  removeGroupParticipant,
 } from '../services/conversation-service.js';
 
 import {
@@ -116,6 +119,21 @@ export async function initChatPage(container) {
       handleProfileUpdated(profile);
     }),
   );
+  unsubscribeFns.push(
+  eventRouter.on(EventTypes.GROUP_UPDATED, (payload) => {
+    handleGroupUpdated(payload);
+    }),
+  );
+  unsubscribeFns.push(
+    eventRouter.on('group.members_added', (payload) => {
+      handleGroupMembersAdded(payload);
+    }),
+  );
+  unsubscribeFns.push(
+    eventRouter.on('group.members_removed', (payload) => {
+      handleGroupMembersRemoved(payload);
+    }),
+  );
 }
 
 
@@ -217,6 +235,254 @@ function handleProfileUpdated(profile) {
         senderEl.textContent = displayName;
       }
     });
+}
+
+/** Apply a real-time group update to the conversation UI. */
+function handleGroupUpdated(payload) {
+  if (
+    !payload ||
+    !payload.conversationId ||
+    typeof payload.name !== 'string'
+  ) {
+    return;
+  }
+
+  const conversationId = String(payload.conversationId);
+
+  const conversation = conversations.find(
+    (item) => String(item.id) === conversationId
+  );
+
+  if (!conversation || conversation.type !== 'group') {
+    return;
+  }
+
+  conversation.name = payload.name;
+  conversation.participantName = payload.name;
+
+  if (payload.updatedAt) {
+    conversation.updatedAt = payload.updatedAt;
+  }
+
+  // Update the conversation list.
+  renderConversationList();
+
+  // Update the open chat header, if this group is active.
+  if (String(activeConversationId) === conversationId) {
+    const headerName = document.getElementById('chat-header-name');
+
+    if (headerName) {
+      headerName.textContent = payload.name;
+    }
+  }
+
+  // Update the open Group Info panel, if one is displayed.
+  const groupInfoOverlay = document.getElementById('group-info-overlay');
+
+  const groupInfoName = groupInfoOverlay?.querySelector(
+    '.group-info-summary h3'
+  );
+
+  if (groupInfoName) {
+    groupInfoName.textContent = payload.name;
+  }
+}
+
+/** Apply a real-time group membership update. */
+async function handleGroupMembersAdded(payload) {
+  if (!payload || !payload.conversationId) return;
+
+  const conversationId = String(payload.conversationId);
+
+  let conversation = conversations.find(
+    (item) => String(item.id) === conversationId
+  );
+
+  // A newly added user may not have this conversation loaded yet.
+  if (!conversation) {
+    const addedMemberIds = Array.isArray(payload.addedMemberIds)
+      ? payload.addedMemberIds.map(String)
+      : [];
+
+    if (addedMemberIds.includes(String(currentUser?.id))) {
+      await loadConversations();
+    }
+
+    return;
+  }
+
+  if (conversation.type !== 'group') return;
+
+  // Apply the authoritative participant list returned by the backend.
+  if (Array.isArray(payload.participants)) {
+    conversation.participants = payload.participants;
+  }
+
+  if (typeof payload.name === 'string') {
+    conversation.name = payload.name;
+    conversation.participantName = payload.name;
+  }
+
+  if (payload.updatedAt) {
+    conversation.updatedAt = payload.updatedAt;
+  }
+
+  renderConversationList();
+
+  // Refresh the active chat header without reloading the page.
+  if (String(activeConversationId) === conversationId) {
+    const headerName = document.getElementById('chat-header-name');
+    const statusEl = document.getElementById('chat-header-status');
+
+    if (headerName) {
+      headerName.textContent =
+        conversation.name || conversation.participantName || 'Unnamed Group';
+    }
+
+    const participants = Array.isArray(conversation.participants)
+      ? conversation.participants
+      : [];
+
+    const otherNames = participants
+      .filter(
+        (participant) =>
+          String(participant.id) !== String(currentUser?.id)
+      )
+      .map(
+        (participant) =>
+          participant.displayName || participant.username || 'Unknown'
+      );
+
+    if (statusEl) {
+      const visibleNames = otherNames.slice(0, 3);
+      const extraCount = otherNames.length - visibleNames.length;
+
+      statusEl.textContent = [
+        `${participants.length} ${
+          participants.length === 1 ? 'member' : 'members'
+        }`,
+        visibleNames.join(', ') +
+          (extraCount > 0 ? ` +${extraCount} more` : ''),
+      ].filter(Boolean).join(' · ');
+
+      statusEl.title = otherNames.join(', ');
+    }
+  }
+
+  // Refresh an open Group Info panel, but don't interrupt the add-members
+  // form currently being used by the administrator.
+  const overlay = document.getElementById('group-info-overlay');
+  const addMembersPanel = document.getElementById('group-add-members-panel');
+
+  if (overlay && addMembersPanel?.hidden !== false) {
+    overlay.querySelector('.group-info-close')?.click();
+    openGroupInfo(conversation);
+  }
+}
+
+
+/** Apply a real-time group membership removal. */
+async function handleGroupMembersRemoved(payload) {
+  if (!payload?.conversationId || !payload?.removedMemberId) return;
+
+  const conversationId = String(payload.conversationId);
+  const removedMemberId = String(payload.removedMemberId);
+  const currentUserWasRemoved = removedMemberId === String(currentUser?.id);
+
+  if (currentUserWasRemoved) {
+    const removedName = payload.name || 'this group';
+
+    document
+      .getElementById('group-info-overlay')
+      ?.querySelector('.group-info-close')
+      ?.click();
+
+    conversations = conversations.filter(
+      (item) => String(item.id) !== conversationId
+    );
+
+    if (String(activeConversationId) === conversationId) {
+      activeConversationId = null;
+      messages = [];
+      explorerOpen = false;
+      explorerSenderId = 'all';
+      explorerDate = '';
+      explorerSearch = '';
+
+      if (pendingAttachmentPreviewUrl) {
+        URL.revokeObjectURL(pendingAttachmentPreviewUrl);
+        pendingAttachmentPreviewUrl = null;
+      }
+      pendingAttachment = null;
+
+      const chatArea = document.getElementById('chat-area');
+      if (chatArea) {
+        chatArea.classList.remove('has-message-explorer');
+        chatArea.innerHTML = `
+          <div class="chat-empty-state">
+            <i class="bi bi-chat-dots" aria-hidden="true"></i>
+            <p>Select a conversation to start chatting</p>
+          </div>`;
+      }
+    }
+
+    renderConversationList();
+    window.alert(`You were removed from "${removedName}".`);
+    return;
+  }
+
+  const conversation = conversations.find(
+    (item) => String(item.id) === conversationId
+  );
+
+  if (!conversation || conversation.type !== 'group') {
+    await loadConversations();
+    return;
+  }
+
+  if (Array.isArray(payload.participants)) {
+    conversation.participants = payload.participants;
+  }
+  if (typeof payload.name === 'string') {
+    conversation.name = payload.name;
+    conversation.participantName = payload.name;
+  }
+  if (payload.updatedAt) {
+    conversation.updatedAt = payload.updatedAt;
+  }
+
+  renderConversationList();
+
+  if (String(activeConversationId) === conversationId) {
+    const headerName = document.getElementById('chat-header-name');
+    const statusEl = document.getElementById('chat-header-status');
+    const participants = Array.isArray(conversation.participants)
+      ? conversation.participants
+      : [];
+    const otherNames = participants
+      .filter((participant) => String(participant.id) !== String(currentUser?.id))
+      .map((participant) => participant.displayName || participant.username || 'Unknown');
+
+    if (headerName) {
+      headerName.textContent = conversation.name || conversation.participantName || 'Unnamed Group';
+    }
+    if (statusEl) {
+      const visibleNames = otherNames.slice(0, 3);
+      const extraCount = otherNames.length - visibleNames.length;
+      statusEl.textContent = [
+        `${participants.length} ${participants.length === 1 ? 'member' : 'members'}`,
+        visibleNames.join(', ') + (extraCount > 0 ? ` +${extraCount} more` : ''),
+      ].filter(Boolean).join(' · ');
+      statusEl.title = otherNames.join(', ');
+    }
+  }
+
+  const overlay = document.getElementById('group-info-overlay');
+  const addMembersPanel = overlay?.querySelector('#group-add-members-panel');
+  if (overlay && addMembersPanel?.hidden !== false) {
+    overlay.querySelector('.group-info-close')?.click();
+    openGroupInfo(conversation);
+  }
 }
 
 
@@ -492,7 +758,7 @@ function openGroupCreation() {
 
     submitButton.disabled =
       !nameInput.value.trim() ||
-      selectedUsers.size < 2;
+      selectedUsers.size < 1;
   }
 
   function renderUserResults(users = []) {
@@ -601,7 +867,7 @@ function openGroupCreation() {
       return;
     }
 
-    if (participantIds.length < 2) {
+    if (participantIds.length < 1) {
       errorEl.textContent = 'Select at least two other people.';
       return;
     }
@@ -936,6 +1202,17 @@ async function openConversation(conversationId) {
       </div>
 
       <button
+        id="group-info-btn"
+        class="btn btn-sm btn-link"
+        type="button"
+        aria-label="Group information"
+        title="Group information"
+        hidden
+      >
+        <i class="bi bi-info-circle"></i>
+      </button>
+
+      <button
         id="message-explorer-btn"
         class="btn btn-sm btn-link"
         type="button"
@@ -1022,7 +1299,17 @@ async function openConversation(conversationId) {
     if (conv) {
       const isGroup = conv.type === 'group';
 
+            const groupInfoBtn = document.getElementById('group-info-btn');
+
+      if (groupInfoBtn && isGroup) {
+        groupInfoBtn.hidden = false;
+        groupInfoBtn.addEventListener('click', () => {
+          openGroupInfo(conv);
+        });
+      }
+
       const displayName = isGroup
+      
         ? (conv.name || conv.participantName || 'Unnamed Group')
         : (conv.participantName || 'Unknown');
 
@@ -1222,6 +1509,626 @@ async function openConversation(conversationId) {
   });
   input.addEventListener('input', debounce(handleTyping, 400));
   input.focus();
+}
+/** Display information about a group conversation. */
+function openGroupInfo(conversation) {
+  if (!conversation || conversation.type !== 'group') return;
+
+  // Remove any previously opened panel.
+  document.getElementById('group-info-overlay')?.remove();
+
+  const participants = Array.isArray(conversation.participants)
+    ? conversation.participants
+    : [];
+
+  const groupName =
+    conversation.name || conversation.participantName || 'Unnamed Group';
+
+  const currentMembership = participants.find(
+  (participant) => String(participant.id) === String(currentUser?.id)
+  );
+
+  const canRename =
+    String(currentMembership?.role).toLowerCase() === 'admin';
+
+
+  const overlay = document.createElement('div');
+  overlay.id = 'group-info-overlay';
+  overlay.className = 'group-info-overlay';
+
+  overlay.innerHTML = `
+    <section
+      class="group-info-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="group-info-title"
+      tabindex="-1"
+    >
+      <header class="group-info-header">
+        <h2 id="group-info-title">Group Info</h2>
+
+        <button
+          type="button"
+          class="group-info-close"
+          aria-label="Close group information"
+        >
+          <i class="bi bi-x-lg" aria-hidden="true"></i>
+        </button>
+      </header>
+
+      <div class="group-info-body">
+        <div class="group-info-summary">
+          <div class="group-info-icon" aria-hidden="true">
+            <i class="bi bi-people-fill"></i>
+          </div>
+
+          <h3>${escapeHtml(groupName)}</h3>
+
+          <p>
+            ${participants.length}
+            ${participants.length === 1 ? 'member' : 'members'}
+          </p>
+        </div>
+                ${
+                canRename
+                  ? `
+                    <div class="d-grid gap-2 mb-4">
+                      <button
+                        type="button"
+                        id="group-info-rename-btn"
+                        class="btn btn-outline-primary"
+                      >
+                        <i class="bi bi-pencil me-2"></i>
+                        Rename Group
+                      </button>
+
+                      <button
+                        type="button"
+                        id="group-info-add-members-btn"
+                        class="btn btn-outline-primary"
+                      >
+                        <i class="bi bi-person-plus me-2"></i>
+                        Add Members
+                      </button>
+                    </div>
+                  `
+                  : ''
+                }
+                  <div id="group-add-members-panel" class="mb-4" hidden>
+            <label for="group-add-members-search" class="form-label">
+              Search for people
+            </label>
+
+            <input
+              id="group-add-members-search"
+              type="search"
+              class="form-control"
+              placeholder="Search by name or username..."
+              autocomplete="off"
+            />
+
+            <div
+              id="group-add-members-error"
+              class="small text-danger mt-2"
+              role="status"
+              aria-live="polite"
+            ></div>
+
+            <div id="group-add-members-selected" class="mt-3"></div>
+
+            <div id="group-add-members-results" class="mt-3"></div>
+
+            <div class="d-flex gap-2 mt-3">
+              <button
+                type="button"
+                id="group-add-members-submit"
+                class="btn btn-primary flex-grow-1"
+                disabled
+              >
+                <i class="bi bi-person-plus me-1"></i>
+                Add Selected
+              </button>
+
+              <button
+                type="button"
+                id="group-add-members-cancel"
+                class="btn btn-outline-secondary"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        
+        <h4 class="group-info-members-title">Members</h4>
+
+        <div class="group-info-member-list">
+          ${
+            participants.length
+              ? participants.map((participant) => {
+                  const name =
+                    participant.displayName ||
+                    participant.username ||
+                    'Unknown';
+
+                  const isCurrentUser =
+                    String(participant.id) === String(currentUser?.id);
+
+                  const role =
+                    String(participant.role).toLowerCase() === 'admin'
+                      ? 'Admin'
+                      : 'Member';
+
+                  return `
+                    <div class="group-info-member">
+                      <div
+                        class="avatar avatar-sm group-info-member-avatar"
+                        data-group-info-member-id="${escapeHtml(participant.id)}"
+                        style="background-color:${avatarColor(name)}"
+                      >
+                        ${escapeHtml(getInitials(name))}
+                      </div>
+
+                      <div class="group-info-member-details">
+                        <div class="group-info-member-name">
+                          ${escapeHtml(name)}
+                          ${
+                            isCurrentUser
+                              ? '<span class="group-info-you-label">You</span>'
+                              : ''
+                          }
+                        </div>
+                      </div>
+
+                      <span
+                        class="group-info-role ${
+                          role === 'Admin' ? 'group-info-role-admin' : ''
+                        }"
+                      >
+                        ${role}
+                      </span>
+                      ${
+                        canRename && !isCurrentUser && role === 'Member'
+                          ? `
+                            <button
+                              type="button"
+                              class="btn btn-sm btn-outline-danger ms-2"
+                              data-remove-group-member="${escapeHtml(participant.id)}"
+                              aria-label="Remove ${escapeHtml(name)} from group"
+                              title="Remove member"
+                            >
+                              <i class="bi bi-person-dash" aria-hidden="true"></i>
+                            </button>
+                          `
+                          : ''
+                      }
+                    </div>
+                  `;
+                }).join('')
+              : '<p class="text-muted">No members found.</p>'
+          }
+        </div>
+      </div>
+    </section>
+  `;
+
+  document.body.appendChild(overlay);
+
+  // Render participant profile photos using the existing avatar function.
+  participants.forEach((participant) => {
+    const avatarElement = Array.from(
+      overlay.querySelectorAll('[data-group-info-member-id]')
+    ).find(
+      (element) =>
+        element.dataset.groupInfoMemberId === String(participant.id)
+    );
+
+    if (avatarElement) {
+      renderPersonAvatar(
+        avatarElement,
+        participant.displayName || participant.username || 'Unknown',
+        participant.avatarUrl
+      );
+    }
+  });
+
+  const closePanel = () => {
+    overlay.remove();
+    document.removeEventListener('keydown', handleEscape);
+  };
+
+  const renameButton = overlay.querySelector('#group-info-rename-btn');
+
+renameButton?.addEventListener('click', async () => {
+  const newName = window.prompt('Enter the new group name:', groupName);
+
+  if (newName === null) return;
+
+  const trimmedName = newName.trim();
+
+  if (!trimmedName) {
+    window.alert('Group name cannot be empty.');
+    return;
+  }
+
+  if (trimmedName.length > 100) {
+    window.alert('Group name cannot exceed 100 characters.');
+    return;
+  }
+
+  renameButton.disabled = true;
+
+  try {
+    const updatedConversation = await renameGroupConversation(
+      conversation.id,
+      trimmedName
+    );
+
+    conversation.name = updatedConversation.name || trimmedName;
+    conversation.participantName = conversation.name;
+    conversation.updatedAt =
+      updatedConversation.updatedAt || new Date().toISOString();
+
+    renderConversationList();
+
+    if (activeConversationId === conversation.id) {
+      const headerName = document.getElementById('chat-header-name');
+
+      if (headerName) {
+        headerName.textContent = conversation.name;
+      }
+    }
+
+    closePanel();
+    openGroupInfo(conversation);
+  } catch (error) {
+    window.alert(error.message || 'Could not rename the group.');
+  } finally {
+    if (renameButton.isConnected) {
+      renameButton.disabled = false;
+    }
+  }
+});
+const addMembersButton = overlay.querySelector(
+  '#group-info-add-members-btn'
+);
+
+const addMembersPanel = overlay.querySelector(
+  '#group-add-members-panel'
+);
+
+const addMembersSearch = overlay.querySelector(
+  '#group-add-members-search'
+);
+
+const addMembersResults = overlay.querySelector(
+  '#group-add-members-results'
+);
+
+const addMembersSelected = overlay.querySelector(
+  '#group-add-members-selected'
+);
+
+const addMembersError = overlay.querySelector(
+  '#group-add-members-error'
+);
+
+const addMembersSubmit = overlay.querySelector(
+  '#group-add-members-submit'
+);
+
+const addMembersCancel = overlay.querySelector(
+  '#group-add-members-cancel'
+);
+
+const existingMemberIds = new Set(
+  participants.map((participant) => String(participant.id))
+);
+
+const remainingCapacity = Math.max(0, 101 - participants.length);
+const selectedMembers = new Map();
+
+let displayedUsers = [];
+let searchRequestNumber = 0;
+
+function renderSelectedMembers() {
+  if (selectedMembers.size === 0) {
+    addMembersSelected.innerHTML =
+      '<div class="small text-muted">No people selected.</div>';
+  } else {
+    addMembersSelected.innerHTML = `
+      <div class="small fw-semibold mb-2">
+        Selected (${selectedMembers.size})
+      </div>
+
+      <div class="d-flex flex-wrap gap-2">
+        ${[...selectedMembers.values()].map((user) => `
+          <button
+            type="button"
+            class="btn btn-sm btn-outline-secondary"
+            data-remove-added-member="${escapeHtml(user.id)}"
+          >
+            ${escapeHtml(user.displayName || user.username || 'Unknown')}
+            <i class="bi bi-x"></i>
+          </button>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  addMembersSelected
+    .querySelectorAll('[data-remove-added-member]')
+    .forEach((button) => {
+      button.addEventListener('click', () => {
+        selectedMembers.delete(button.dataset.removeAddedMember);
+        addMembersError.textContent = '';
+
+        renderSelectedMembers();
+        renderAvailableUsers(displayedUsers);
+      });
+    });
+
+  addMembersSubmit.disabled =
+    selectedMembers.size === 0 ||
+    selectedMembers.size > remainingCapacity;
+}
+
+function renderAvailableUsers(users = []) {
+  displayedUsers = users;
+
+  addMembersResults.innerHTML = users.length
+    ? users.map((user) => {
+        const id = String(user.id);
+        const isSelected = selectedMembers.has(id);
+
+        return `
+          <button
+            type="button"
+            class="w-100 border-0 bg-transparent text-start p-2 d-flex align-items-center"
+            data-add-member-user-id="${escapeHtml(id)}"
+            ${isSelected ? 'disabled' : ''}
+          >
+            <div
+              class="avatar avatar-sm me-2"
+              style="background-color:${avatarColor(user.displayName || user.username || 'Unknown')}"
+              aria-hidden="true"
+            >
+              ${escapeHtml(getInitials(user.displayName || user.username || 'Unknown'))}
+            </div>
+
+            <div class="flex-grow-1">
+              <div class="fw-semibold">
+                ${escapeHtml(user.displayName || 'Unknown')}
+              </div>
+              <div class="small text-muted">
+                @${escapeHtml(user.username || '')}
+              </div>
+            </div>
+
+            <i class="bi ${
+              isSelected ? 'bi-check-circle-fill' : 'bi-plus-circle'
+            }"></i>
+          </button>
+        `;
+      }).join('')
+    : '<div class="small text-muted">No eligible users found.</div>';
+
+  addMembersResults
+    .querySelectorAll('[data-add-member-user-id]')
+    .forEach((button) => {
+      button.addEventListener('click', () => {
+        const user = displayedUsers.find(
+          (item) => String(item.id) === button.dataset.addMemberUserId
+        );
+
+        if (!user || selectedMembers.has(String(user.id))) return;
+
+        if (selectedMembers.size >= remainingCapacity) {
+          addMembersError.textContent =
+            'This group has reached its membership limit.';
+          return;
+        }
+
+        selectedMembers.set(String(user.id), user);
+        addMembersError.textContent = '';
+
+        renderSelectedMembers();
+        renderAvailableUsers(displayedUsers);
+      });
+    });
+}
+
+addMembersButton?.addEventListener('click', () => {
+  addMembersPanel.hidden = false;
+  addMembersButton.hidden = true;
+
+  if (remainingCapacity === 0) {
+    addMembersError.textContent =
+      'This group has reached the 101-member limit.';
+    addMembersSubmit.disabled = true;
+  }
+
+  addMembersSearch.focus();
+});
+
+addMembersCancel?.addEventListener('click', () => {
+  addMembersPanel.hidden = true;
+  addMembersButton.hidden = false;
+  addMembersError.textContent = '';
+  addMembersSearch.value = '';
+  addMembersResults.innerHTML = '';
+  selectedMembers.clear();
+  displayedUsers = [];
+
+  renderSelectedMembers();
+});
+
+addMembersSearch?.addEventListener(
+  'input',
+  debounce(async (event) => {
+    const query = event.target.value.trim();
+    const requestNumber = ++searchRequestNumber;
+
+    addMembersError.textContent = '';
+
+    if (!query) {
+      renderAvailableUsers([]);
+      return;
+    }
+
+    addMembersResults.innerHTML =
+      '<div class="small text-muted">Searching...</div>';
+
+    try {
+      const users = await searchUsers(query);
+
+      // Ignore responses from older searches.
+      if (requestNumber !== searchRequestNumber || !addMembersPanel.isConnected) {
+        return;
+      }
+
+      const eligibleUsers = users.filter((user) => {
+        const id = String(user.id);
+
+        return (
+          id !== String(currentUser?.id) &&
+          !existingMemberIds.has(id)
+        );
+      });
+
+      renderAvailableUsers(eligibleUsers);
+    } catch (error) {
+      if (requestNumber !== searchRequestNumber) return;
+
+      console.error('[chat] Add-member search failed:', error);
+
+      addMembersResults.innerHTML =
+        '<div class="small text-danger">Search failed. Please try again.</div>';
+    }
+  }, 300)
+);
+
+addMembersSubmit?.addEventListener('click', async () => {
+  const participantIds = [...selectedMembers.keys()];
+
+  if (!participantIds.length) {
+    addMembersError.textContent = 'Select at least one person.';
+    return;
+  }
+
+  if (participantIds.length > remainingCapacity) {
+    addMembersError.textContent =
+      'The selected members exceed the group size limit.';
+    return;
+  }
+
+  addMembersSubmit.disabled = true;
+  addMembersSubmit.innerHTML = `
+    <span class="spinner-border spinner-border-sm me-2"></span>
+    Adding members...
+  `;
+
+  addMembersError.textContent = '';
+
+  try {
+    const updatedConversation = await addGroupParticipants(
+      conversation.id,
+      participantIds
+    );
+
+    if (Array.isArray(updatedConversation.participants)) {
+      conversation.participants = updatedConversation.participants;
+    }
+
+    if (typeof updatedConversation.name === 'string') {
+      conversation.name = updatedConversation.name;
+      conversation.participantName = updatedConversation.name;
+    }
+
+    if (updatedConversation.updatedAt) {
+      conversation.updatedAt = updatedConversation.updatedAt;
+    }
+
+    renderConversationList();
+
+    // Rebuild Group Info from the updated authoritative participant list.
+    closePanel();
+    openGroupInfo(conversation);
+  } catch (error) {
+    console.error('[chat] Adding group members failed:', error);
+
+    addMembersError.textContent =
+      error.message || 'Could not add members. Please try again.';
+  } finally {
+    if (addMembersSubmit.isConnected) {
+      addMembersSubmit.innerHTML = `
+        <i class="bi bi-person-plus me-1"></i>
+        Add Selected
+      `;
+
+      addMembersSubmit.disabled =
+        selectedMembers.size === 0 ||
+        selectedMembers.size > remainingCapacity;
+    }
+  }
+});
+
+
+  // Admins can remove regular members, but never themselves or another admin.
+  overlay.querySelectorAll('[data-remove-group-member]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const memberId = String(button.dataset.removeGroupMember || '');
+      const target = participants.find(
+        (participant) => String(participant.id) === memberId
+      );
+      if (!target) return;
+
+      const targetName = target.displayName || target.username || 'this member';
+      if (!window.confirm(`Remove ${targetName} from this group?`)) return;
+
+      button.disabled = true;
+      try {
+        const updatedConversation = await removeGroupParticipant(
+          conversation.id,
+          memberId
+        );
+
+        if (Array.isArray(updatedConversation.participants)) {
+          conversation.participants = updatedConversation.participants;
+        }
+        if (updatedConversation.updatedAt) {
+          conversation.updatedAt = updatedConversation.updatedAt;
+        }
+
+        renderConversationList();
+        closePanel();
+        openGroupInfo(conversation);
+      } catch (error) {
+        window.alert(error.message || 'Could not remove this member.');
+      } finally {
+        if (button.isConnected) button.disabled = false;
+      }
+    });
+  });
+
+  const handleEscape = (event) => {
+    if (event.key === 'Escape') {
+      closePanel();
+    }
+  };
+
+  overlay
+    .querySelector('.group-info-close')
+    .addEventListener('click', closePanel);
+
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay) {
+      closePanel();
+    }
+  });
+
+  document.addEventListener('keydown', handleEscape);
+
+  overlay.querySelector('.group-info-dialog').focus();
 }
 
 /** Load messages for a conversation. */
@@ -1688,11 +2595,13 @@ async function renderAttachment(attachment, container) {
     if (mimeType.startsWith('image/')) {
       const image = document.createElement('img');
 
-      image.src = attachmentUrl.href;
       image.alt = safeName;
       image.loading = 'lazy';
       image.className = 'message-media-preview';
+      image.width = 640;
+      image.height = 480;
       image.tabIndex = 0;
+      image.src = attachmentUrl.href;
       image.setAttribute('role', 'button');
       image.setAttribute('aria-label', `View image: ${safeName}`);
 
