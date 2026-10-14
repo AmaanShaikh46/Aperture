@@ -265,6 +265,79 @@ export async function removeGroupParticipant(conversationId, participantId) {
   );
 }
 
+
+/** Transfer group administration to an existing regular member. */
+export async function transferGroupAdmin(conversationId, participantId) {
+  const targetId = String(participantId ?? '').trim();
+  if (!targetId) throw new Error('Select a group member to become the admin.');
+
+  if (USE_MOCK_API) {
+    const conversation = mockConversations.find((item) => item.id === conversationId);
+    if (!conversation || conversation.type !== 'group') {
+      throw new Error('Group conversation not found.');
+    }
+    const participants = conversation.participants || [];
+    const current = participants.find(
+      (participant) => String(participant.id) === String(mockCurrentUser.id)
+    );
+    const target = participants.find(
+      (participant) => String(participant.id) === targetId
+    );
+    if (current?.role !== 'admin') throw new Error('Only the current group admin can transfer administration.');
+    if (!target) throw new Error('The selected user is not a member of this group.');
+    if (target.role === 'admin') throw new Error('The selected member is already an administrator.');
+    current.role = 'member';
+    target.role = 'admin';
+    conversation.updatedAt = new Date().toISOString();
+    return {
+      conversationId: String(conversation.id),
+      name: conversation.name,
+      updatedAt: conversation.updatedAt,
+      adminUserId: targetId,
+      participants: [...participants],
+    };
+  }
+
+  return post(
+    `/api/conversations/${encodeURIComponent(conversationId)}/transfer-admin`,
+    { participantId: targetId }
+  );
+}
+
+/** Leave a group as a regular member. Group admins must transfer admin first. */
+export async function leaveGroupConversation(conversationId) {
+  if (USE_MOCK_API) {
+    const index = mockConversations.findIndex((item) => item.id === conversationId);
+    if (index < 0) throw new Error('Group conversation not found.');
+    const conversation = mockConversations[index];
+    if (conversation.type !== 'group') throw new Error('Only group conversations can be left.');
+    const participants = conversation.participants || [];
+    const current = participants.find(
+      (participant) => String(participant.id) === String(mockCurrentUser.id)
+    );
+    if (!current) throw new Error('You are not a member of this group.');
+    if (current.role === 'admin') {
+      throw new Error('Transfer admin rights to another member before leaving the group.');
+    }
+    conversation.participants = participants.filter(
+      (participant) => String(participant.id) !== String(mockCurrentUser.id)
+    );
+    conversation.updatedAt = new Date().toISOString();
+    const payload = {
+      conversationId: String(conversation.id),
+      name: conversation.name,
+      updatedAt: conversation.updatedAt,
+      removedMemberId: String(mockCurrentUser.id),
+      leftBySelf: true,
+      participants: [...conversation.participants],
+    };
+    mockConversations.splice(index, 1);
+    return payload;
+  }
+
+  return post(`/api/conversations/${encodeURIComponent(conversationId)}/leave`);
+}
+
 export default {
   createConversation,
   createGroupConversation,
@@ -273,4 +346,6 @@ export default {
   renameGroupConversation,
   addGroupParticipants,
   removeGroupParticipant,
+  transferGroupAdmin,
+  leaveGroupConversation,
 };

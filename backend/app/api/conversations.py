@@ -931,3 +931,209 @@ async def remove_group_participant(
 
     return payload
 
+
+
+@router.post("/conversations/{conversation_id}/transfer-admin")
+async def transfer_group_admin(
+    conversation_id: uuid.UUID,
+    data: dict,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Transfer the sole group-admin role from the caller to a regular member."""
+    current_user_id = uuid.UUID(current_user["id"])
+
+    try:
+        target_user_id = uuid.UUID(data.get("participantId"))
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(status_code=400, detail="Invalid participant ID")
+
+    if target_user_id == current_user_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Choose another member to receive group administration",
+        )
+
+    result = await db.execute(
+        select(Conversation, ConversationParticipant)
+        .join(
+            ConversationParticipant,
+            ConversationParticipant.conversation_id == Conversation.id,
+        )
+        .where(
+            Conversation.id == conversation_id,
+            ConversationParticipant.user_id == current_user_id,
+        )
+    )
+    row = result.one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    conversation, current_membership = row
+    if conversation.type != "group":
+        raise HTTPException(
+            status_code=400,
+            detail="Administration can only be transferred in a group",
+        )
+    if current_membership.role != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Only the current group admin can transfer administration",
+        )
+
+    target_result = await db.execute(
+        select(ConversationParticipant).where(
+            ConversationParticipant.conversation_id == conversation_id,
+            ConversationParticipant.user_id == target_user_id,
+        )
+    )
+    target_membership = target_result.scalar_one_or_none()
+    if target_membership is None:
+        raise HTTPException(
+            status_code=404,
+            detail="The selected user is not a member of this group",
+        )
+    if target_membership.role == "admin":
+        raise HTTPException(
+            status_code=400,
+            detail="The selected member is already an administrator",
+        )
+
+    # Change both roles in the same transaction so the group always retains an admin.
+    current_membership.role = "member"
+    target_membership.role = "admin"
+    conversation.updated_at = datetime.now(timezone.utc)
+
+    try:
+        await db.commit()
+        await db.refresh(conversation)
+    except Exception:
+        await db.rollback()
+        raise
+
+    participant_result = await db.execute(
+        select(Profile, ConversationParticipant.role)
+        .join(
+            ConversationParticipant,
+            ConversationParticipant.user_id == Profile.id,
+        )
+        .where(ConversationParticipant.conversation_id == conversation_id)
+    )
+    participant_rows = participant_result.all()
+    participants = [
+        {
+            "id": str(profile.id),
+            "displayName": profile.display_name or profile.username or "Unknown",
+            "avatarUrl": profile.avatar_url,
+            "role": member_role,
+        }
+        for profile, member_role in participant_rows
+    ]
+
+    payload = {
+        "conversationId": str(conversation.id),
+        "name": conversation.name,
+        "updatedAt": conversation.updated_at.isoformat() if conversation.updated_at else None,
+        "adminUserId": str(target_user_id),
+        "participants": participants,
+    }
+    event = {"type": "group.role_updated", "payload": payload}
+    for profile, _role in participant_rows:
+        try:
+            await manager.send_to_user(str(profile.id), event)
+        except Exception:
+            logger.exception(
+                "Failed to broadcast admin transfer for conversation %s to user %s",
+                conversation.id,
+                profile.id,
+            )
+
+    return payload
+
+
+@router.post("/conversations/{conversation_id}/leave")
+async def leave_group_conversation(
+    conversation_id: uuid.UUID,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Leave a group as a regular member. Admins must transfer admin first."""
+    current_user_id = uuid.UUID(current_user["id"])
+
+    result = await db.execute(
+        select(Conversation, ConversationParticipant)
+        .join(
+            ConversationParticipant,
+            ConversationParticipant.conversation_id == Conversation.id,
+        )
+        .where(
+            Conversation.id == conversation_id,
+            ConversationParticipant.user_id == current_user_id,
+        )
+    )
+    row = result.one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    conversation, membership = row
+    if conversation.type != "group":
+        raise HTTPException(
+            status_code=400,
+            detail="You can only leave group conversations using this action",
+        )
+    if membership.role == "admin":
+        raise HTTPException(
+            status_code=400,
+            detail="Transfer admin rights to another member before leaving the group",
+        )
+
+    await db.delete(membership)
+    conversation.updated_at = datetime.now(timezone.utc)
+    try:
+        await db.commit()
+        await db.refresh(conversation)
+    except Exception:
+        await db.rollback()
+        raise
+
+    participant_result = await db.execute(
+        select(Profile, ConversationParticipant.role)
+        .join(
+            ConversationParticipant,
+            ConversationParticipant.user_id == Profile.id,
+        )
+        .where(ConversationParticipant.conversation_id == conversation_id)
+    )
+    participant_rows = participant_result.all()
+    participants = [
+        {
+            "id": str(profile.id),
+            "displayName": profile.display_name or profile.username or "Unknown",
+            "avatarUrl": profile.avatar_url,
+            "role": member_role,
+        }
+        for profile, member_role in participant_rows
+    ]
+
+    payload = {
+        "conversationId": str(conversation.id),
+        "name": conversation.name,
+        "updatedAt": conversation.updated_at.isoformat() if conversation.updated_at else None,
+        "removedMemberId": str(current_user_id),
+        "leftBySelf": True,
+        "participants": participants,
+    }
+    event = {"type": "group.members_removed", "payload": payload}
+    recipient_ids = {str(profile.id) for profile, _role in participant_rows}
+    recipient_ids.add(str(current_user_id))
+    for recipient_id in recipient_ids:
+        try:
+            await manager.send_to_user(recipient_id, event)
+        except Exception:
+            logger.exception(
+                "Failed to broadcast group departure for conversation %s to user %s",
+                conversation.id,
+                recipient_id,
+            )
+
+    return payload

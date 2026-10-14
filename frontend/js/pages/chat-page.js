@@ -10,6 +10,8 @@ import {
   renameGroupConversation,
   addGroupParticipants,
   removeGroupParticipant,
+  transferGroupAdmin,
+  leaveGroupConversation,
 } from '../services/conversation-service.js';
 
 import {
@@ -132,6 +134,11 @@ export async function initChatPage(container) {
   unsubscribeFns.push(
     eventRouter.on('group.members_removed', (payload) => {
       handleGroupMembersRemoved(payload);
+    }),
+  );
+  unsubscribeFns.push(
+    eventRouter.on('group.role_updated', (payload) => {
+      handleGroupRoleUpdated(payload);
     }),
   );
 }
@@ -390,6 +397,12 @@ async function handleGroupMembersRemoved(payload) {
   const currentUserWasRemoved = removedMemberId === String(currentUser?.id);
 
   if (currentUserWasRemoved) {
+    // The REST response and WebSocket event can both report the same departure.
+    const alreadyRemoved =
+      !conversations.some((item) => String(item.id) === conversationId) &&
+      String(activeConversationId) !== conversationId;
+    if (alreadyRemoved) return;
+
     const removedName = payload.name || 'this group';
 
     document
@@ -427,7 +440,7 @@ async function handleGroupMembersRemoved(payload) {
     }
 
     renderConversationList();
-    window.alert(`You were removed from "${removedName}".`);
+    window.alert(payload.leftBySelf ? `You left "${removedName}".` : `You were removed from "${removedName}".`);
     return;
   }
 
@@ -477,6 +490,61 @@ async function handleGroupMembersRemoved(payload) {
     }
   }
 
+  const overlay = document.getElementById('group-info-overlay');
+  const addMembersPanel = overlay?.querySelector('#group-add-members-panel');
+  if (overlay && addMembersPanel?.hidden !== false) {
+    overlay.querySelector('.group-info-close')?.click();
+    openGroupInfo(conversation);
+  }
+}
+
+
+/** Apply real-time group administrator transfer to the conversation UI. */
+async function handleGroupRoleUpdated(payload) {
+  if (!payload?.conversationId || !Array.isArray(payload.participants)) return;
+
+  const conversationId = String(payload.conversationId);
+  let conversation = conversations.find(
+    (item) => String(item.id) === conversationId
+  );
+
+  if (!conversation) {
+    await loadConversations();
+    conversation = conversations.find(
+      (item) => String(item.id) === conversationId
+    );
+  }
+  if (!conversation || conversation.type !== 'group') return;
+
+  conversation.participants = payload.participants;
+  if (typeof payload.name === 'string') {
+    conversation.name = payload.name;
+    conversation.participantName = payload.name;
+  }
+  if (payload.updatedAt) conversation.updatedAt = payload.updatedAt;
+
+  renderConversationList();
+
+  if (String(activeConversationId) === conversationId) {
+    const headerName = document.getElementById('chat-header-name');
+    const statusEl = document.getElementById('chat-header-status');
+    const names = payload.participants
+      .filter((participant) => String(participant.id) !== String(currentUser?.id))
+      .map((participant) => participant.displayName || participant.username || 'Unknown');
+    const visibleNames = names.slice(0, 3);
+    const extraCount = names.length - visibleNames.length;
+
+    if (headerName) headerName.textContent = conversation.name || 'Unnamed Group';
+    if (statusEl) {
+      statusEl.textContent = [
+        `${payload.participants.length} ${payload.participants.length === 1 ? 'member' : 'members'}`,
+        visibleNames.join(', ') + (extraCount > 0 ? ` +${extraCount} more` : ''),
+      ].filter(Boolean).join(' · ');
+      statusEl.title = names.join(', ');
+    }
+  }
+
+  // Re-render Group Info so admin-only controls immediately follow the new role.
   const overlay = document.getElementById('group-info-overlay');
   const addMembersPanel = overlay?.querySelector('#group-add-members-panel');
   if (overlay && addMembersPanel?.hidden !== false) {
@@ -1594,7 +1662,18 @@ function openGroupInfo(conversation) {
                   `
                   : ''
                 }
-                  <div id="group-add-members-panel" class="mb-4" hidden>
+                <div class="d-grid gap-2 mb-4">
+                  <button
+                    type="button"
+                    id="group-info-leave-btn"
+                    class="btn btn-outline-danger"
+                  >
+                    <i class="bi bi-box-arrow-left me-2"></i>
+                    Leave Group
+                  </button>
+                  ${canRename ? '<div class="small text-muted">Transfer admin rights to another member before leaving.</div>' : ''}
+                </div>
+                <div id="group-add-members-panel" class="mb-4" hidden>
             <label for="group-add-members-search" class="form-label">
               Search for people
             </label>
@@ -1691,7 +1770,16 @@ function openGroupInfo(conversation) {
                           ? `
                             <button
                               type="button"
-                              class="btn btn-sm btn-outline-danger ms-2"
+                              class="btn btn-sm btn-outline-primary ms-2"
+                              data-transfer-group-admin="${escapeHtml(participant.id)}"
+                              aria-label="Transfer administration to ${escapeHtml(name)}"
+                              title="Make admin and transfer administration"
+                            >
+                              <i class="bi bi-shield-check" aria-hidden="true"></i>
+                            </button>
+                            <button
+                              type="button"
+                              class="btn btn-sm btn-outline-danger ms-1"
                               data-remove-group-member="${escapeHtml(participant.id)}"
                               aria-label="Remove ${escapeHtml(name)} from group"
                               title="Remove member"
@@ -2108,6 +2196,57 @@ addMembersSubmit?.addEventListener('click', async () => {
         if (button.isConnected) button.disabled = false;
       }
     });
+  });
+
+  // The current admin can transfer administration to a regular member.
+  overlay.querySelectorAll('[data-transfer-group-admin]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const targetId = String(button.dataset.transferGroupAdmin || '');
+      const target = participants.find(
+        (participant) => String(participant.id) === targetId
+      );
+      if (!target) return;
+
+      const targetName = target.displayName || target.username || 'this member';
+      if (!window.confirm(`Transfer group administration to ${targetName}? You will become a regular member and can no longer rename the group, add members, or remove members.`)) return;
+
+      button.disabled = true;
+      try {
+        const result = await transferGroupAdmin(conversation.id, targetId);
+        if (Array.isArray(result.participants)) {
+          conversation.participants = result.participants;
+        }
+        if (result.updatedAt) conversation.updatedAt = result.updatedAt;
+        renderConversationList();
+        closePanel();
+        openGroupInfo(conversation);
+      } catch (error) {
+        window.alert(error.message || 'Could not transfer group administration.');
+      } finally {
+        if (button.isConnected) button.disabled = false;
+      }
+    });
+  });
+
+  // A regular member can leave. The backend independently rejects admins.
+  overlay.querySelector('#group-info-leave-btn')?.addEventListener('click', async (event) => {
+    if (canRename) {
+      window.alert('Transfer admin rights to another member before leaving the group.');
+      return;
+    }
+
+    if (!window.confirm(`Leave "${groupName}"? You will lose access to this group's messages and attachments.`)) return;
+
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const result = await leaveGroupConversation(conversation.id);
+      handleGroupMembersRemoved({ ...result, leftBySelf: true });
+    } catch (error) {
+      window.alert(error.message || 'Could not leave the group.');
+    } finally {
+      if (button.isConnected) button.disabled = false;
+    }
   });
 
   const handleEscape = (event) => {
