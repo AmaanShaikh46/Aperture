@@ -17,3 +17,5 @@ httpx
 
 pytest
 pytest-asyncio
+
+Pillow>=10.4

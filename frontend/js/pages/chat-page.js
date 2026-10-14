@@ -110,7 +110,115 @@ export async function initChatPage(container) {
       if (data.conversationId === activeConversationId) hideTypingIndicator();
     }),
   );
+
+  unsubscribeFns.push(
+    eventRouter.on(EventTypes.PROFILE_UPDATED, (profile) => {
+      handleProfileUpdated(profile);
+    }),
+  );
 }
+
+
+/**
+ * Apply a realtime profile update to conversations currently loaded in chat.
+ */
+function handleProfileUpdated(profile) {
+  if (!profile || !profile.userId) return;
+
+  const userId = String(profile.userId);
+  const displayName =
+    typeof profile.displayName === 'string' && profile.displayName.trim()
+      ? profile.displayName.trim()
+      : profile.username || 'Unknown';
+
+  const avatarUrl =
+    typeof profile.avatarUrl === 'string' ? profile.avatarUrl : '';
+
+  let activeConversationAffected = false;
+
+  conversations.forEach((conv) => {
+    // Update the other participant's details in direct conversations.
+    if (String(conv.participantId) === userId) {
+      conv.participantName = displayName;
+      conv.participantAvatar = avatarUrl;
+
+      if (conv.id === activeConversationId) {
+        activeConversationAffected = true;
+      }
+    }
+
+    // Update the member's details in every group conversation.
+    if (Array.isArray(conv.participants)) {
+      conv.participants.forEach((participant) => {
+        if (String(participant.id) === userId) {
+          participant.displayName = displayName;
+          participant.avatarUrl = avatarUrl;
+
+          if (conv.id === activeConversationId) {
+            activeConversationAffected = true;
+          }
+        }
+      });
+    }
+  });
+
+  // Re-render the list so updated names and avatars appear.
+  renderConversationList();
+
+  if (!activeConversationAffected) return;
+
+  const activeConv = conversations.find(
+    (conv) => conv.id === activeConversationId,
+  );
+
+  if (!activeConv) return;
+
+  const nameEl = document.getElementById('chat-header-name');
+  const avatarEl = document.getElementById('chat-header-avatar');
+
+  if (activeConv.type === 'group') {
+    // Preserve the group's name and avatar.
+    const statusEl = document.getElementById('chat-header-status');
+
+    if (statusEl && Array.isArray(activeConv.participants)) {
+      const names = activeConv.participants
+        .filter(
+          (participant) =>
+            String(participant.id) !== String(currentUser?.id),
+        )
+        .map(
+          (participant) =>
+            participant.displayName || participant.username || 'Unknown',
+        );
+
+      const visibleNames = names.slice(0, 3);
+      const extraCount = names.length - visibleNames.length;
+
+      statusEl.textContent =
+        visibleNames.join(', ') +
+        (extraCount > 0 ? ` +${extraCount} more` : '');
+
+      statusEl.title = names.join(', ');
+    }
+  } else if (String(activeConv.participantId) === userId) {
+    // Refresh the active direct-chat header.
+    if (nameEl) nameEl.textContent = displayName;
+
+    if (avatarEl) {
+      renderPersonAvatar(avatarEl, displayName, avatarUrl);
+    }
+  }
+
+  // Keep sender names current in an open group conversation.
+  document
+    .querySelectorAll('.group-message-sender')
+    .forEach((senderEl) => {
+      if (String(senderEl.dataset.senderId) === userId) {
+        senderEl.textContent = displayName;
+      }
+    });
+}
+
 
 /** Render the two-panel shell: conversation list + chat area. */
 function renderShell(container) {
@@ -670,15 +778,12 @@ function renderConversationList() {
             <i class="bi bi-people-fill"></i>
           </div>
         `
-        : `
-          <div
-            class="avatar"
-            style="background-color:${color}"
-            aria-hidden="true"
-          >
-            ${initials}
-          </div>
-        `;
+        : `<div
+          class="avatar conversation-person-avatar"
+          style="background-color:${color}"
+        >
+          ${initials}
+        </div>`;
 
       return `
         <div
@@ -722,6 +827,25 @@ function renderConversationList() {
     })
     .join('');
 
+    // Load real profile pictures for direct conversations.
+  listEl.querySelectorAll('.conversation-item').forEach((item) => {
+    const conversation = conversations.find(
+      (conv) => conv.id === item.dataset.conversationId
+    );
+
+    const avatarElement = item.querySelector(
+      '.conversation-person-avatar'
+    );
+
+    if (!conversation || !avatarElement) return;
+
+    renderPersonAvatar(
+      avatarElement,
+      conversation.participantName,
+      conversation.participantAvatar
+    );
+  });
+
   listEl.querySelectorAll('.conversation-item').forEach((el) => {
     el.addEventListener('click', () => {
       openConversation(el.dataset.conversationId);
@@ -734,6 +858,66 @@ function renderConversationList() {
       }
     });
   });
+}
+
+/**
+ * Render a user's profile picture with a safe initials fallback.
+ *
+ * The avatar URL comes from the backend profile record.
+ * Failed image loads gracefully fall back to initials.
+ */
+function renderPersonAvatar(element, displayName, avatarUrl) {
+  if (!element) return;
+
+  const name = displayName || 'Unknown';
+  const initials = getInitials(name);
+
+  element.classList.remove('conversation-group-avatar');
+  element.style.backgroundColor = avatarColor(name);
+  element.style.overflow = 'hidden';
+  element.replaceChildren();
+  element.textContent = initials;
+  element.setAttribute('role', 'img');
+  element.setAttribute('aria-label', `${name}'s profile picture`);
+
+  if (!avatarUrl || typeof avatarUrl !== 'string') {
+    return;
+  }
+
+  let parsedUrl;
+
+  try {
+    parsedUrl = new URL(avatarUrl, window.location.origin);
+  } catch {
+    return;
+  }
+
+  // Profile avatars must use HTTPS, except for same-origin local development.
+  if (
+    parsedUrl.protocol !== 'https:' &&
+    parsedUrl.origin !== window.location.origin
+  ) {
+    return;
+  }
+
+  const image = new Image();
+
+  image.alt = '';
+  image.className = 'avatar-image';
+  image.loading = 'eager';
+  image.decoding = 'async';
+  image.referrerPolicy = 'no-referrer';
+
+  image.addEventListener('load', () => {
+    element.replaceChildren(image);
+  }, { once: true });
+
+  image.addEventListener('error', () => {
+    element.replaceChildren();
+    element.textContent = initials;
+  }, { once: true });
+
+  image.src = parsedUrl.href;
 }
 
 /** Open a conversation and load its messages. */
@@ -889,11 +1073,12 @@ async function openConversation(conversationId) {
         statusEl.setAttribute('aria-label', statusEl.textContent);
       } else {
         // Preserve the existing direct-chat avatar behavior.
-        avatarEl.classList.remove('conversation-group-avatar');
-        avatarEl.textContent = getInitials(displayName);
-        avatarEl.style.backgroundColor = avatarColor(displayName);
-        avatarEl.removeAttribute('aria-label');
-
+        // Display the contact's profile picture, with initials as fallback.
+        renderPersonAvatar(
+          avatarEl,
+          displayName,
+          conv.participantAvatar
+        );
         // Presence applies to individual conversations, not groups.
         statusEl.textContent = '';
 
