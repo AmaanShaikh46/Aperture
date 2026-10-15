@@ -46,6 +46,21 @@ async def send_message(
 ):
     current_user_id = uuid.UUID(current_user["id"])
 
+    # Fetch recipients before persistence so a post-commit lookup failure cannot
+    # turn a successfully saved message into a failed HTTP response.
+    result = await db.execute(
+        select(ConversationParticipant.user_id).where(
+            ConversationParticipant.conversation_id == conversation_id,
+        )
+    )
+    participant_ids = result.scalars().all()
+
+    if current_user_id not in participant_ids:
+        raise HTTPException(
+            status_code=404,
+            detail="Conversation not found",
+        )
+
     message = await create_message(
         db=db,
         conversation_id=conversation_id,
@@ -53,14 +68,31 @@ async def send_message(
         content=data.get("content", ""),
     )
 
-    return {
+    message_data = {
         "id": str(message.id),
         "conversationId": str(message.conversation_id),
         "senderId": str(message.sender_id),
         "content": message.content,
-        "createdAt": message.created_at,
+        "createdAt": message.created_at.isoformat(),
         "status": message.status,
     }
+
+    # HTTP-created messages must reach connected participants just like
+    # WebSocket-created messages. Delivery is best-effort: the DB commit above
+    # is authoritative, so a socket failure must not make the HTTP request fail.
+    for participant_id in participant_ids:
+        try:
+            await manager.send_to_user(
+                str(participant_id),
+                {"type": "message.new", "payload": message_data},
+            )
+        except Exception:
+            logger.exception(
+                "Message %s was saved, but WebSocket delivery failed.",
+                message.id,
+            )
+
+    return message_data
 
 @router.get("/conversations/{conversation_id}/messages")
 async def get_messages(
