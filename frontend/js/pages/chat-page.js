@@ -48,6 +48,13 @@ let pendingAttachmentPreviewUrl = null;
 let typingTimeout = null;
 let unsubscribeFns = [];
 
+const MESSAGE_PAGE_SIZE = 50;
+let messagesLoadGeneration = 0;
+let messagePaginationConversationId = null;
+let nextMessageCursor = null;
+let hasOlderMessages = false;
+let loadingOlderMessages = false;
+
 let explorerOpen = false;
 let explorerSenderId = 'all';
 let explorerDate = '';
@@ -55,6 +62,119 @@ let explorerTab = 'messages';
 let explorerSearch = '';
 
 const attachmentUrlCache = new Map();
+
+/** Prepare a server message for safe, incremental receipt UI updates. */
+function prepareMessageForUi(message) {
+  const prepared = { ...message };
+  const hasReceiptCoverage = Array.isArray(message.receipts) && message.receipts.length > 0;
+  prepared.receipts = Array.isArray(message.receipts)
+    ? message.receipts.map((receipt) => ({ ...receipt }))
+    : [];
+  // Legacy messages have no historical recipient receipt rows. Keep that fact
+  // so a later live event won't imply we know the status of every recipient.
+  prepared._receiptCoverageKnown = message._receiptCoverageKnown ?? hasReceiptCoverage;
+  return prepared;
+}
+
+/** Merge duplicate/new-message payloads without regressing a read receipt. */
+function mergeMessageUpdate(existing, incoming) {
+  const merged = { ...existing, ...incoming };
+  const receipts = new Map();
+  for (const receipt of (existing.receipts || [])) {
+    if (receipt?.userId) receipts.set(String(receipt.userId), { ...receipt });
+  }
+  for (const receipt of (incoming.receipts || [])) {
+    if (!receipt?.userId) continue;
+    const key = String(receipt.userId);
+    const previous = receipts.get(key);
+    receipts.set(key, {
+      ...previous,
+      ...receipt,
+      status: previous?.status === 'read' || receipt.status === 'read' ? 'read' : 'unread',
+      readAt: previous?.readAt || receipt.readAt || null,
+    });
+  }
+  merged.receipts = [...receipts.values()];
+  const statusRank = { sent: 0, delivered: 1, read: 2 };
+  if ((statusRank[existing.status] ?? -1) > (statusRank[incoming.status] ?? -1)) {
+    merged.status = existing.status;
+  }
+  merged._receiptCoverageKnown = Boolean(
+    existing._receiptCoverageKnown || incoming._receiptCoverageKnown ||
+    (Array.isArray(incoming.receipts) && incoming.receipts.length > 0)
+  );
+  return merged;
+}
+
+/** Merge, de-duplicate, and chronologically order loaded/live message pages. */
+function mergeAndSortMessages(...groups) {
+  const unique = new Map();
+  groups.flat().forEach((message) => {
+    if (!message?.id) return;
+    const id = String(message.id);
+    unique.set(id, unique.has(id) ? mergeMessageUpdate(unique.get(id), message) : message);
+  });
+  return [...unique.values()].sort((a, b) => {
+    const aTime = Date.parse(a.createdAt);
+    const bTime = Date.parse(b.createdAt);
+    if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) return aTime - bTime;
+    return String(a.id).localeCompare(String(b.id));
+  });
+}
+
+/** Apply a server message.read event to just that recipient's receipt row. */
+function applyReadReceiptEvent(data) {
+  if (!data?.messageId || !data?.userId) return;
+  const msg = messages.find((item) => String(item.id) === String(data.messageId));
+  if (!msg) return;
+  if (data.conversationId && String(data.conversationId) !== String(msg.conversationId)) return;
+
+  if (!Array.isArray(msg.receipts)) msg.receipts = [];
+  const userId = String(data.userId);
+  let receipt = msg.receipts.find((item) => String(item.userId) === userId);
+  if (receipt) {
+    receipt.status = 'read';
+    receipt.readAt = receipt.readAt || data.readAt || null;
+  } else {
+    // We retain the event for legacy messages, but don't claim full group
+    // coverage when the migrated database has no historic recipient rows.
+    msg.receipts.push({ userId, status: 'read', readAt: data.readAt || null });
+  }
+
+  const conv = conversations.find(
+    (item) => String(item.id) === String(msg.conversationId)
+  );
+  if (conv?.type === 'direct') msg.status = 'read';
+  renderMessages();
+}
+
+/** Render group message read counts with a per-member tooltip. */
+function renderGroupReceiptSummary(message, conversation) {
+  if (!message._receiptCoverageKnown || !Array.isArray(message.receipts)) return '';
+  const receipts = message.receipts.filter((receipt) => receipt?.userId);
+  if (receipts.length === 0) return '';
+
+  const participants = conversation?.participants || [];
+  const participantName = (userId) => {
+    const participant = participants.find(
+      (item) => String(item.id) === String(userId)
+    );
+    return participant?.displayName || `Member ${String(userId).slice(0, 8)}`;
+  };
+  const readReceipts = receipts.filter((receipt) => receipt.status === 'read');
+  const unreadReceipts = receipts.filter((receipt) => receipt.status !== 'read');
+  const details = [];
+  if (readReceipts.length) {
+    details.push(`Read by: ${readReceipts.map((receipt) => participantName(receipt.userId)).join(', ')}`);
+  }
+  if (unreadReceipts.length) {
+    details.push(`Not yet read by: ${unreadReceipts.map((receipt) => participantName(receipt.userId)).join(', ')}`);
+  }
+  const title = details.join(' | ') || 'No read receipts yet';
+  const label = `${readReceipts.length} of ${receipts.length} recipients have read this message. ${title}`;
+  return `<span class="message-read-summary" title="${escapeHtml(title)}" aria-label="${escapeHtml(label)}">${readReceipts.length}/${receipts.length} read</span>`;
+}
+
 /** Initialize the chat page. */
 export async function initChatPage(container) {
   currentUser = await auth.getUser();
@@ -77,17 +197,34 @@ export async function initChatPage(container) {
 
   // Subscribe to real-time events.
   unsubscribeFns.push(
-    eventRouter.on(EventTypes.MESSAGE_NEW, (msg) => {
-      if (msg.conversationId === activeConversationId) {
-        messages.push(msg);
+    eventRouter.on(EventTypes.MESSAGE_NEW, (incomingMessage) => {
+      if (!incomingMessage?.id || !incomingMessage?.conversationId) return;
+
+      const msg = prepareMessageForUi(incomingMessage);
+      const conversationId = String(msg.conversationId);
+      const isIncoming = String(msg.senderId) !== String(currentUser.id);
+
+      if (conversationId === String(activeConversationId)) {
+        // The server fans message.new out to every participant, including the
+        // sender. Upsert by ID so reconnects/echoes cannot duplicate bubbles.
+        const existingIndex = messages.findIndex(
+          (item) => String(item.id) === String(msg.id)
+        );
+        if (existingIndex >= 0) {
+          messages[existingIndex] = mergeMessageUpdate(messages[existingIndex], msg);
+        } else {
+          messages.push(msg);
+        }
         renderMessages();
-        markMessageRead(msg.id).catch(() => {});
+        if (isIncoming) markMessageRead(msg.id).catch(() => {});
       } else {
-        // Increment unread on conversation list
-        const conv = conversations.find((c) => c.id === msg.conversationId);
+        const conv = conversations.find(
+          (item) => String(item.id) === conversationId
+        );
         if (conv) {
-          conv.unreadCount = (conv.unreadCount || 0) + 1;
           conv.lastMessage = msg;
+          // A sender's own WebSocket echo must not increase their unread count.
+          if (isIncoming) conv.unreadCount = (conv.unreadCount || 0) + 1;
           renderConversationList();
         }
       }
@@ -95,14 +232,13 @@ export async function initChatPage(container) {
   );
   unsubscribeFns.push(
     eventRouter.on(EventTypes.MESSAGE_DELIVERED, (data) => {
-      const msg = messages.find((m) => m.id === data.messageId);
+      const msg = messages.find((m) => String(m.id) === String(data.messageId));
       if (msg) { msg.status = 'delivered'; renderMessages(); }
     }),
   );
   unsubscribeFns.push(
     eventRouter.on(EventTypes.MESSAGE_READ, (data) => {
-      const msg = messages.find((m) => m.id === data.messageId);
-      if (msg) { msg.status = 'read'; renderMessages(); }
+      applyReadReceiptEvent(data);
     }),
   );
   unsubscribeFns.push(
@@ -2270,19 +2406,140 @@ addMembersSubmit?.addEventListener('click', async () => {
   overlay.querySelector('.group-info-dialog').focus();
 }
 
-/** Load messages for a conversation. */
+/** Bind top-scroll pagination once for each rendered message list. */
+function bindMessagePagination(listEl) {
+  if (!listEl || listEl.dataset.paginationBound === 'true') return;
+  listEl.dataset.paginationBound = 'true';
+  listEl.addEventListener('scroll', () => {
+    if (listEl.scrollTop <= 80) {
+      loadOlderMessages(activeConversationId);
+    }
+  }, { passive: true });
+}
+
+/** Capture a visible message so prepending history doesn't jump the viewport. */
+function captureMessageScrollAnchor(listEl) {
+  const listTop = listEl.getBoundingClientRect().top;
+  for (const bubble of listEl.querySelectorAll('.message-bubble')) {
+    const rect = bubble.getBoundingClientRect();
+    if (rect.bottom > listTop) {
+      return { id: bubble.dataset.messageId, top: rect.top };
+    }
+  }
+  return null;
+}
+
+function restoreMessageScrollAnchor(listEl, anchor) {
+  if (!anchor?.id) return;
+  const bubble = [...listEl.querySelectorAll('.message-bubble')]
+    .find((item) => String(item.dataset.messageId) === String(anchor.id));
+  if (!bubble) return;
+  listEl.scrollTop += bubble.getBoundingClientRect().top - anchor.top;
+}
+
+function markIncomingMessagesRead(pageMessages) {
+  pageMessages.forEach((message) => {
+    if (String(message.senderId) === String(currentUser.id)) return;
+    const ownReceipt = Array.isArray(message.receipts)
+      ? message.receipts.find((receipt) => String(receipt.userId) === String(currentUser.id))
+      : null;
+    if (ownReceipt?.status === 'read') return;
+    markMessageRead(message.id).catch(() => {});
+  });
+}
+
+/** Load the newest page of a conversation. */
 async function loadMessages(conversationId) {
   const listEl = document.getElementById('message-list');
+  if (!listEl) return;
+
+  const generation = ++messagesLoadGeneration;
+  messagePaginationConversationId = String(conversationId);
+  nextMessageCursor = null;
+  hasOlderMessages = false;
+  loadingOlderMessages = false;
+  listEl.dataset.loadingOlder = 'false';
+  delete listEl.dataset.loadOlderError;
+  // Remove a previously open conversation's messages while preserving any
+  // same-conversation messages already in memory (for refresh after an upload).
+  messages = messages.filter(
+    (message) => String(message.conversationId) === String(conversationId)
+  );
+  if (messages.length === 0) {
+    listEl.innerHTML = '<div class="empty-state"><p>Loading messages…</p></div>';
+  } else {
+    renderMessages({ mode: 'preserve' });
+  }
+  bindMessagePagination(listEl);
+
   try {
-    messages = await getMessages(conversationId);
-    renderMessages();
-    // Mark all as read
-    messages.forEach((m) => {
-      if (m.senderId !== currentUser.id) markMessageRead(m.id).catch(() => {});
-    });
+    const page = await getMessages(conversationId, { limit: MESSAGE_PAGE_SIZE });
+    // Ignore responses that arrive after the user has switched conversations.
+    if (generation !== messagesLoadGeneration || String(activeConversationId) !== String(conversationId)) return;
+
+    const pageItems = (Array.isArray(page) ? page : (page?.items || []))
+      .map(prepareMessageForUi);
+    // Keep live messages that arrived while the history request was in flight.
+    messages = mergeAndSortMessages(pageItems, messages);
+    nextMessageCursor = page?.nextCursor || null;
+    hasOlderMessages = Boolean(page?.hasMore && nextMessageCursor);
+    renderMessages({ mode: 'bottom' });
+    markIncomingMessagesRead(messages);
   } catch (e) {
+    if (generation !== messagesLoadGeneration || String(activeConversationId) !== String(conversationId)) return;
     listEl.innerHTML = `<div class="error-state"><i class="bi bi-exclamation-triangle"></i><p>Could not load messages.</p><button class="btn btn-sm btn-outline-primary" onclick="window.__apertureMsgReload('${conversationId}')">Retry</button></div>`;
     window.__apertureMsgReload = (id) => loadMessages(id);
+  }
+}
+
+/** Load the page immediately older than the oldest loaded message. */
+async function loadOlderMessages(conversationId) {
+  if (!conversationId || String(conversationId) !== messagePaginationConversationId) return;
+  if (loadingOlderMessages || !hasOlderMessages || !nextMessageCursor) return;
+
+  const listEl = document.getElementById('message-list');
+  if (!listEl) return;
+
+  const generation = messagesLoadGeneration;
+  const cursor = nextMessageCursor;
+  const anchor = captureMessageScrollAnchor(listEl);
+  loadingOlderMessages = true;
+  listEl.dataset.loadingOlder = 'true';
+  delete listEl.dataset.loadOlderError;
+
+  try {
+    const page = await getMessages(conversationId, {
+      limit: MESSAGE_PAGE_SIZE,
+      cursor,
+    });
+    if (generation !== messagesLoadGeneration || String(activeConversationId) !== String(conversationId)) return;
+
+    const pageItems = Array.isArray(page) ? page : (page?.items || []);
+    const knownIds = new Set(messages.map((message) => String(message.id)));
+    const olderMessages = pageItems
+      .map(prepareMessageForUi)
+      .filter((message) => !knownIds.has(String(message.id)));
+
+    // Realtime events can arrive during the request; keep them and deduplicate.
+    messages = mergeAndSortMessages(olderMessages, messages);
+
+    nextMessageCursor = page?.nextCursor || null;
+    hasOlderMessages = Boolean(page?.hasMore && nextMessageCursor);
+    listEl.dataset.loadingOlder = 'false';
+    delete listEl.dataset.loadOlderError;
+    renderMessages({ mode: 'anchor', anchor });
+    markIncomingMessagesRead(olderMessages);
+  } catch (error) {
+    if (generation === messagesLoadGeneration) {
+      listEl.dataset.loadingOlder = 'false';
+      listEl.dataset.loadOlderError = 'true';
+      console.error('[chat] Could not load older messages:', error);
+    }
+  } finally {
+    if (generation === messagesLoadGeneration) {
+      loadingOlderMessages = false;
+      listEl.dataset.loadingOlder = 'false';
+    }
   }
 }
 
@@ -2859,10 +3116,14 @@ function handleViewerKeydown(event) {
 }
 
 
-/** Rendr the msg list. */
-function renderMessages() {
+/** Render the message list while retaining the reader's current scroll position. */
+function renderMessages(options = {}) {
   const listEl = document.getElementById('message-list');
   if (!listEl) return;
+
+  const mode = options.mode || 'auto';
+  const previousScrollTop = listEl.scrollTop;
+  const wasNearBottom = listEl.scrollHeight - listEl.scrollTop - listEl.clientHeight <= 120;
 
   if (!messages || messages.length === 0) {
     listEl.innerHTML = `
@@ -2880,8 +3141,11 @@ function renderMessages() {
 
   listEl.innerHTML = messages
     .map((msg) => {
-      const isMine = msg.senderId === currentUser.id;
+      const isMine = String(msg.senderId) === String(currentUser.id);
       const statusIcon = isMine ? renderStatusIcon(msg.status) : '';
+      const receiptSummary = isMine && isGroup
+        ? renderGroupReceiptSummary(msg, conv)
+        : '';
 
       const messageDate = new Date(msg.createdAt);
       const dayKey = Number.isNaN(messageDate.getTime())
@@ -2933,6 +3197,7 @@ function renderMessages() {
           <div class="message-meta">
             <span class="message-time">${formatTime(msg.createdAt)}</span>
             ${statusIcon}
+            ${receiptSummary}
           </div>
         </div>`;
     })
@@ -2969,7 +3234,16 @@ function renderMessages() {
       renderAttachment(attachment, wrapper);
     });
   });
-  listEl.scrollTop = listEl.scrollHeight;
+
+  if (mode === 'bottom' || (mode === 'auto' && wasNearBottom)) {
+    listEl.scrollTop = listEl.scrollHeight;
+  } else if (mode === 'anchor') {
+    restoreMessageScrollAnchor(listEl, options.anchor);
+  } else {
+    // Read-receipt and delivery updates should not yank someone away from older
+    // messages they are currently reading.
+    listEl.scrollTop = previousScrollTop;
+  }
 }
 
 /** Render the status icon for a sent message. */
@@ -3070,6 +3344,11 @@ export function destroyChatPage() {
   unsubscribeFns.forEach((fn) => fn());
   unsubscribeFns = [];
   activeConversationId = null;
+  messagesLoadGeneration += 1;
+  messagePaginationConversationId = null;
+  nextMessageCursor = null;
+  hasOlderMessages = false;
+  loadingOlderMessages = false;
 }
 
 export default { initChatPage, destroyChatPage };

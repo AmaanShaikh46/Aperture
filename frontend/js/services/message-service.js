@@ -6,15 +6,44 @@ import { get, post } from './api-client.js';
 import { mockMessages, mockConversations, mockCurrentUser } from '../mock/mock-data.js';
 import { uuid } from '../utils.js';
 
-/** Get messages for a conversation (optionally cursor-paginated). */
-export async function getMessages(conversationId, cursor) {
+/** Get one chronological page of messages, optionally preceding a cursor. */
+export async function getMessages(conversationId, { limit = 50, cursor = null } = {}) {
   if (USE_MOCK_API) {
-    const msgs = mockMessages[conversationId] || [];
-    return msgs.map((m) => ({ ...m }));
+    const compare = (a, b) => {
+      const aTime = Date.parse(a.createdAt);
+      const bTime = Date.parse(b.createdAt);
+      if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) {
+        return aTime - bTime;
+      }
+      return String(a.id).localeCompare(String(b.id));
+    };
+    const allMessages = [...(mockMessages[conversationId] || [])].sort(compare);
+    const eligible = cursor
+      ? allMessages.filter((message) => {
+          const timeDifference = Date.parse(message.createdAt) - Date.parse(cursor.createdAt);
+          return timeDifference < 0 || (
+            timeDifference === 0 && String(message.id).localeCompare(String(cursor.id)) < 0
+          );
+        })
+      : allMessages;
+    const hasMore = eligible.length > limit;
+    const items = eligible.slice(-limit).map((message) => ({ ...message }));
+    const oldest = items[0];
+    return {
+      items,
+      hasMore,
+      nextCursor: hasMore && oldest
+        ? { createdAt: oldest.createdAt, id: oldest.id }
+        : null,
+    };
   }
-  const query = {};
-  if (cursor) query.cursor = cursor;
-  return get(`/api/conversations/${conversationId}/messages`, query ? { query } : undefined);
+
+  const query = { limit: String(limit) };
+  if (cursor?.createdAt && cursor?.id) {
+    query.before_created_at = cursor.createdAt;
+    query.before_id = cursor.id;
+  }
+  return get(`/api/conversations/${conversationId}/messages`, { query });
 }
 
 /** Send a message in a conversation. */
@@ -45,8 +74,20 @@ export async function sendMessage(conversationId, content) {
 export async function markMessageRead(messageId) {
   if (USE_MOCK_API) {
     for (const convId of Object.keys(mockMessages)) {
-      const msg = mockMessages[convId].find((m) => m.id === messageId);
-      if (msg) msg.status = 'read';
+      const msg = mockMessages[convId].find((m) => String(m.id) === String(messageId));
+      if (!msg) continue;
+      if (!Array.isArray(msg.receipts)) msg.receipts = [];
+      let receipt = msg.receipts.find(
+        (item) => String(item.userId) === String(mockCurrentUser.id)
+      );
+      if (!receipt) {
+        receipt = { userId: mockCurrentUser.id, status: 'read', readAt: new Date().toISOString() };
+        msg.receipts.push(receipt);
+      } else {
+        receipt.status = 'read';
+        receipt.readAt ||= new Date().toISOString();
+      }
+      msg.status = 'read';
     }
     return { success: true };
   }

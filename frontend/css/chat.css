@@ -309,6 +309,27 @@
   gap: 0.5rem;
 }
 
+.message-list[data-loading-older="true"]::before,
+.message-list[data-load-older-error="true"]::before {
+  display: block;
+  align-self: center;
+  max-width: 100%;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  background: var(--bs-tertiary-bg);
+  color: var(--bs-secondary-color);
+  font-size: 0.78rem;
+  text-align: center;
+}
+
+.message-list[data-loading-older="true"]::before {
+  content: "Loading older messages…";
+}
+
+.message-list[data-load-older-error="true"]::before {
+  content: "Could not load older messages. Scroll to the top to retry.";
+}
+
 .message-bubble {
   max-width: 75%;
   padding: 0.6rem 0.9rem;
@@ -405,6 +426,22 @@
 
 .message-bubble.theirs .message-meta {
   justify-content: flex-start;
+}
+
+.message-read-summary {
+  display: inline-block;
+  margin-left: 0.15rem;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.66rem;
+  line-height: 1.2;
+  cursor: help;
+}
+
+.message-bubble.mine .message-read-summary {
+  color: rgba(255, 255, 255, 0.92);
 }
 
 /* Typing indicator */
