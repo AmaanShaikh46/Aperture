@@ -3,6 +3,7 @@ from app.models.profiles import Profile
 from app.models.conversations import Conversation
 from app.models.conversation_participants import ConversationParticipant
 from app.models.message import Message
+from app.models.message_receipt import MessageReceipt
 from app.models.attachment import Attachment
 
 __all__ = [
@@ -11,4 +12,5 @@ __all__ = [
     "Conversation",
     "ConversationParticipant",
     "Message",
+    "MessageReceipt",
 ]

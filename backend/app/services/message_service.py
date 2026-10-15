@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.conversation_participants import ConversationParticipant
 from app.models.message import Message
+from app.models.message_receipt import MessageReceipt
 
 from datetime import datetime, timezone
 from app.models.conversations import Conversation
@@ -83,6 +84,24 @@ async def create_message(
         )
 
         db.add(message)
+        # Flush so the database-generated message ID is available before receipts
+        # are added. Message and recipient receipt rows commit atomically.
+        await db.flush()
+
+        recipient_result = await db.execute(
+            select(ConversationParticipant.user_id).where(
+                ConversationParticipant.conversation_id == conversation_id,
+                ConversationParticipant.user_id != sender_id,
+            )
+        )
+        for recipient_id in recipient_result.scalars().all():
+            db.add(
+                MessageReceipt(
+                    message_id=message.id,
+                    user_id=recipient_id,
+                    read_at=None,
+                )
+            )
 
         # Update conversation ordering for the conversation list.
         conversation.updated_at = datetime.now(timezone.utc)

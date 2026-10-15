@@ -146,6 +146,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 "content": message.content,
                 "createdAt": message.created_at.isoformat(),
                 "status": message.status,
+                "receipts": [
+                    {"userId": str(participant_id), "status": "unread", "readAt": None}
+                    for participant_id in participant_ids
+                    if participant_id != sender_id
+                ],
             }
 
             for participant_id in participant_ids:

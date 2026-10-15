@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import (
     APIRouter,
@@ -7,9 +8,11 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     UploadFile,
 )
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -23,6 +26,8 @@ from app.database.database import get_db
 from app.models.attachment import Attachment
 from app.models.conversation_participants import ConversationParticipant
 from app.models.message import Message
+from app.models.message_receipt import MessageReceipt
+from app.models.conversations import Conversation
 from app.services.media_service import (
     MAX_FILE_SIZE,
     create_storage_path,
@@ -75,6 +80,11 @@ async def send_message(
         "content": message.content,
         "createdAt": message.created_at.isoformat(),
         "status": message.status,
+        "receipts": [
+            {"userId": str(participant_id), "status": "unread", "readAt": None}
+            for participant_id in participant_ids
+            if participant_id != current_user_id
+        ],
     }
 
     # HTTP-created messages must reach connected participants just like
@@ -97,61 +107,85 @@ async def send_message(
 @router.get("/conversations/{conversation_id}/messages")
 async def get_messages(
     conversation_id: uuid.UUID,
+    limit: int = Query(default=50, ge=1, le=100),
+    before_created_at: datetime | None = None,
+    before_id: uuid.UUID | None = None,
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     current_user_id = uuid.UUID(current_user["id"])
 
-    # Verify conversation membership.
+    # Verify conversation membership before returning any history.
     result = await db.execute(
         select(ConversationParticipant).where(
             ConversationParticipant.conversation_id == conversation_id,
             ConversationParticipant.user_id == current_user_id,
         )
     )
-
     if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    # The compound cursor makes pagination deterministic when messages share a
+    # timestamp. Both cursor fields must be supplied together.
+    if (before_created_at is None) != (before_id is None):
         raise HTTPException(
-            status_code=404,
-            detail="Conversation not found",
+            status_code=400,
+            detail="Both before_created_at and before_id are required for pagination.",
         )
 
-    # Fetch messages in chronological order.
+    query = select(Message).where(Message.conversation_id == conversation_id)
+    if before_created_at is not None and before_id is not None:
+        if before_created_at.tzinfo is None:
+            before_created_at = before_created_at.replace(tzinfo=timezone.utc)
+        query = query.where(
+            or_(
+                Message.created_at < before_created_at,
+                and_(
+                    Message.created_at == before_created_at,
+                    Message.id < before_id,
+                ),
+            )
+        )
+
+    # Read newest-first with one extra row to determine if older history exists;
+    # reverse the selected page before serializing so the client gets chronology.
     result = await db.execute(
-        select(Message)
-        .where(Message.conversation_id == conversation_id)
-        .order_by(Message.created_at.asc())
+        query
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(limit + 1)
     )
+    newest_first = list(result.scalars().all())
+    has_more = len(newest_first) > limit
+    messages = list(reversed(newest_first[:limit]))
 
-    messages = result.scalars().all()
-
-    # Fetch attachments for these messages in one query.
-    # This avoids issuing a separate database query per message.
+    # Fetch attachments and read receipts in bulk for this page only.
     attachments_by_message = {}
+    receipts_by_message = {}
 
     if messages:
         message_ids = [message.id for message in messages]
 
         result = await db.execute(
-            select(Attachment).where(
-                Attachment.message_id.in_(message_ids)
-            )
+            select(Attachment).where(Attachment.message_id.in_(message_ids))
         )
+        for attachment in result.scalars().all():
+            attachments_by_message.setdefault(attachment.message_id, []).append(attachment)
 
-        attachments = result.scalars().all()
-
-        for attachment in attachments:
-            attachments_by_message.setdefault(
-                attachment.message_id, []
-            ).append(attachment)
+        result = await db.execute(
+            select(MessageReceipt).where(MessageReceipt.message_id.in_(message_ids))
+        )
+        for receipt in result.scalars().all():
+            receipts_by_message.setdefault(receipt.message_id, []).append(
+                {
+                    "userId": str(receipt.user_id),
+                    "status": "read" if receipt.read_at is not None else "unread",
+                    "readAt": receipt.read_at.isoformat() if receipt.read_at else None,
+                }
+            )
 
     response = []
-
     for message in messages:
-        message_attachments = attachments_by_message.get(
-            message.id, []
-        )
-
+        message_attachments = attachments_by_message.get(message.id, [])
         attachment_data = [
             {
                 "id": str(attachment.id),
@@ -162,13 +196,9 @@ async def get_messages(
             for attachment in message_attachments
         ]
 
-        # Preserve ordinary text messages.
-        # Identify media messages using their attachment MIME types.
         message_type = "text"
-
         if message_attachments:
             mime_type = message_attachments[0].mime_type.lower()
-
             if mime_type.startswith("image/"):
                 message_type = "image"
             elif mime_type.startswith("video/"):
@@ -182,14 +212,30 @@ async def get_messages(
                 "conversationId": str(message.conversation_id),
                 "senderId": str(message.sender_id),
                 "content": message.content,
-                "createdAt": message.created_at,
+                "createdAt": message.created_at.isoformat(),
                 "status": message.status,
                 "type": message_type,
                 "attachments": attachment_data,
+                # Empty for legacy messages created before read receipts existed.
+                "receipts": receipts_by_message.get(message.id, []),
             }
         )
 
-    return response
+    # Cursor points at the oldest item in this page; it is only needed when the
+    # database indicates that an earlier page remains.
+    next_cursor = None
+    if has_more and messages:
+        oldest_message = messages[0]
+        next_cursor = {
+            "createdAt": oldest_message.created_at.isoformat(),
+            "id": str(oldest_message.id),
+        }
+
+    return {
+        "items": response,
+        "hasMore": has_more,
+        "nextCursor": next_cursor,
+    }
 
 @router.post("/messages/{message_id}/read")
 async def mark_message_read(
@@ -199,42 +245,143 @@ async def mark_message_read(
 ):
     current_user_id = uuid.UUID(current_user["id"])
 
-    result = await db.execute(
-        select(Message).where(Message.id == message_id)
-    )
-
+    result = await db.execute(select(Message).where(Message.id == message_id))
     message = result.scalar_one_or_none()
 
-    if not message:
-        raise HTTPException(
-            status_code=404,
-            detail="Message not found",
-        )
+    if message is None:
+        raise HTTPException(status_code=404, detail="Message not found")
 
-    # Make sure the current user belongs to this conversation
-    result = await db.execute(
-        select(ConversationParticipant).where(
+    # Verify membership without revealing whether an inaccessible message exists.
+    membership_result = await db.execute(
+        select(ConversationParticipant.user_id).where(
             ConversationParticipant.conversation_id == message.conversation_id,
             ConversationParticipant.user_id == current_user_id,
         )
     )
+    if membership_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Message not found")
 
-    participant = result.scalar_one_or_none()
+    if message.sender_id == current_user_id:
+        raise HTTPException(status_code=400, detail="You cannot mark your own message as read.")
 
-    if not participant:
-        raise HTTPException(
-            status_code=404,
-            detail="Message not found",
+    read_at = datetime.now(timezone.utc)
+
+    # PostgreSQL upsert makes repeated read requests idempotent and preserves the
+    # first read timestamp if multiple tabs report the same message.
+    receipt_insert = pg_insert(MessageReceipt).values(
+        message_id=message.id,
+        user_id=current_user_id,
+        read_at=read_at,
+    )
+    receipt_upsert = receipt_insert.on_conflict_do_update(
+        index_elements=[MessageReceipt.message_id, MessageReceipt.user_id],
+        set_={
+            "read_at": func.coalesce(
+                MessageReceipt.read_at,
+                receipt_insert.excluded.read_at,
+            )
+        },
+    )
+    await db.execute(receipt_upsert)
+
+    # Keep the legacy single-message status meaningful for direct chats only.
+    # A single group's member reading must not make the whole group message read.
+    conversation_result = await db.execute(
+        select(Conversation.type).where(Conversation.id == message.conversation_id)
+    )
+    conversation_type = conversation_result.scalar_one_or_none()
+    if conversation_type == "direct":
+        message.status = "read"
+
+    # Resolve response data and recipients before commit so a post-commit
+    # database lookup failure cannot make a saved read receipt look unsuccessful.
+    receipt_result = await db.execute(
+        select(MessageReceipt).where(
+            MessageReceipt.message_id == message.id,
+            MessageReceipt.user_id == current_user_id,
         )
+    )
+    receipt = receipt_result.scalar_one()
+    serialized_read_at = receipt.read_at.isoformat() if receipt.read_at else read_at.isoformat()
 
-    message.status = "read"
+    participant_result = await db.execute(
+        select(ConversationParticipant.user_id).where(
+            ConversationParticipant.conversation_id == message.conversation_id,
+        )
+    )
+    participant_ids = participant_result.scalars().all()
 
     await db.commit()
+
+    # Notify all currently connected participants. Persistence is authoritative;
+    # a delivery failure must not undo or fail the read receipt.
+    event = {
+        "type": "message.read",
+        "payload": {
+            "messageId": str(message.id),
+            "conversationId": str(message.conversation_id),
+            "userId": str(current_user_id),
+            "status": "read",
+            "readAt": serialized_read_at,
+        },
+    }
+    for participant_id in participant_ids:
+        try:
+            await manager.send_to_user(str(participant_id), event)
+        except Exception:
+            logger.exception(
+                "Read receipt for message %s was saved, but realtime delivery failed.",
+                message.id,
+            )
 
     return {
         "success": True,
         "messageId": str(message.id),
-        "status": message.status,
+        "conversationId": str(message.conversation_id),
+        "userId": str(current_user_id),
+        "status": "read",
+        "readAt": serialized_read_at,
+    }
+
+
+@router.get("/messages/{message_id}/receipts")
+async def get_message_receipts(
+    message_id: uuid.UUID,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    current_user_id = uuid.UUID(current_user["id"])
+
+    result = await db.execute(select(Message).where(Message.id == message_id))
+    message = result.scalar_one_or_none()
+    if message is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    membership_result = await db.execute(
+        select(ConversationParticipant.user_id).where(
+            ConversationParticipant.conversation_id == message.conversation_id,
+            ConversationParticipant.user_id == current_user_id,
+        )
+    )
+    if membership_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    result = await db.execute(
+        select(MessageReceipt).where(MessageReceipt.message_id == message.id)
+    )
+    receipts = result.scalars().all()
+
+    return {
+        "messageId": str(message.id),
+        "conversationId": str(message.conversation_id),
+        "receipts": [
+            {
+                "userId": str(receipt.user_id),
+                "status": "read" if receipt.read_at is not None else "unread",
+                "readAt": receipt.read_at.isoformat() if receipt.read_at else None,
+            }
+            for receipt in receipts
+        ],
     }
 
 
@@ -360,6 +507,15 @@ async def upload_attachment(
         await db.flush()
         
         db.add(attachment)
+        for recipient_id in participant_ids:
+            if recipient_id != current_user_id:
+                db.add(
+                    MessageReceipt(
+                        message_id=message_id,
+                        user_id=recipient_id,
+                        read_at=None,
+                    )
+                )
         await db.commit()
     except Exception:
         await db.rollback()
@@ -383,6 +539,11 @@ async def upload_attachment(
         "createdAt": message.created_at.isoformat(),
         "status": message.status,
         "type": message_type,
+        "receipts": [
+            {"userId": str(recipient_id), "status": "unread", "readAt": None}
+            for recipient_id in participant_ids
+            if recipient_id != current_user_id
+        ],
         "attachments": [
             {
                 "id": str(attachment.id),
