@@ -70,9 +70,11 @@ function prepareMessageForUi(message) {
   prepared.receipts = Array.isArray(message.receipts)
     ? message.receipts.map((receipt) => ({ ...receipt }))
     : [];
-  // Legacy messages have no historical recipient receipt rows. Keep that fact
-  // so a later live event won't imply we know the status of every recipient.
-  prepared._receiptCoverageKnown = message._receiptCoverageKnown ?? hasReceiptCoverage;
+  // Trust the server's explicit flag. Legacy messages can acquire one receipt
+  // when read, but that single row is not complete group coverage.
+  prepared._receiptCoverageKnown = message._receiptCoverageKnown
+    ?? message.receiptTrackingEnabled
+    ?? hasReceiptCoverage;
   return prepared;
 }
 
@@ -99,10 +101,16 @@ function mergeMessageUpdate(existing, incoming) {
   if ((statusRank[existing.status] ?? -1) > (statusRank[incoming.status] ?? -1)) {
     merged.status = existing.status;
   }
-  merged._receiptCoverageKnown = Boolean(
-    existing._receiptCoverageKnown || incoming._receiptCoverageKnown ||
-    (Array.isArray(incoming.receipts) && incoming.receipts.length > 0)
-  );
+  const trackingFlag = incoming.receiptTrackingEnabled ?? existing.receiptTrackingEnabled;
+  if (typeof trackingFlag === 'boolean') {
+    merged.receiptTrackingEnabled = trackingFlag;
+    merged._receiptCoverageKnown = trackingFlag;
+  } else {
+    merged._receiptCoverageKnown = Boolean(
+      existing._receiptCoverageKnown || incoming._receiptCoverageKnown ||
+      (Array.isArray(incoming.receipts) && incoming.receipts.length > 0)
+    );
+  }
   return merged;
 }
 

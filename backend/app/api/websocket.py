@@ -110,19 +110,27 @@ async def websocket_endpoint(websocket: WebSocket):
 
             try:
                 async with AsyncSessionLocal() as db:
-                    message = await create_message(
-                        db=db,
-                        conversation_id=conversation_id,
-                        sender_id=sender_id,
-                        content=content,
-                    )
-
+                    # Resolve/authorize recipients before create_message commits.
+                    # Avoid a post-commit query failure making an already-saved
+                    # message look failed and causing the client to retry it.
                     result = await db.execute(
                         select(ConversationParticipant.user_id).where(
                             ConversationParticipant.conversation_id == conversation_id
                         )
                     )
                     participant_ids = result.scalars().all()
+                    if sender_id not in participant_ids:
+                        raise HTTPException(
+                            status_code=404,
+                            detail="Conversation not found",
+                        )
+
+                    message = await create_message(
+                        db=db,
+                        conversation_id=conversation_id,
+                        sender_id=sender_id,
+                        content=content,
+                    )
 
             except HTTPException as exc:
                 await _send_protocol_error(websocket, str(exc.detail))
@@ -146,6 +154,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 "content": message.content,
                 "createdAt": message.created_at.isoformat(),
                 "status": message.status,
+                "receiptTrackingEnabled": bool(message.receipt_tracking_enabled),
                 "receipts": [
                     {"userId": str(participant_id), "status": "unread", "readAt": None}
                     for participant_id in participant_ids

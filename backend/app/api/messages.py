@@ -80,6 +80,7 @@ async def send_message(
         "content": message.content,
         "createdAt": message.created_at.isoformat(),
         "status": message.status,
+        "receiptTrackingEnabled": bool(message.receipt_tracking_enabled),
         "receipts": [
             {"userId": str(participant_id), "status": "unread", "readAt": None}
             for participant_id in participant_ids
@@ -214,6 +215,7 @@ async def get_messages(
                 "content": message.content,
                 "createdAt": message.created_at.isoformat(),
                 "status": message.status,
+                "receiptTrackingEnabled": bool(message.receipt_tracking_enabled),
                 "type": message_type,
                 "attachments": attachment_data,
                 # Empty for legacy messages created before read receipts existed.
@@ -341,6 +343,7 @@ async def mark_message_read(
         "userId": str(current_user_id),
         "status": "read",
         "readAt": serialized_read_at,
+        "receiptTrackingEnabled": bool(message.receipt_tracking_enabled),
     }
 
 
@@ -374,6 +377,7 @@ async def get_message_receipts(
     return {
         "messageId": str(message.id),
         "conversationId": str(message.conversation_id),
+        "receiptTrackingEnabled": bool(message.receipt_tracking_enabled),
         "receipts": [
             {
                 "userId": str(receipt.user_id),
@@ -489,6 +493,7 @@ async def upload_attachment(
         sender_id=current_user_id,
         content=caption.strip(),
         status="sent",
+        receipt_tracking_enabled=True,
     )
 
     attachment = Attachment(
@@ -538,6 +543,7 @@ async def upload_attachment(
         "content": message.content,
         "createdAt": message.created_at.isoformat(),
         "status": message.status,
+        "receiptTrackingEnabled": bool(message.receipt_tracking_enabled),
         "type": message_type,
         "receipts": [
             {"userId": str(recipient_id), "status": "unread", "readAt": None}

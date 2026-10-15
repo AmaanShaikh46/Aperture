@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Text, false
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.database import Base
@@ -40,4 +40,13 @@ class Message(Base):
         Text,
         nullable=False,
         default="sent",
+    )
+
+    # False for messages that predate per-recipient receipt tracking. This
+    # prevents a single newly-created receipt from implying full group coverage.
+    receipt_tracking_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=false(),
     )
