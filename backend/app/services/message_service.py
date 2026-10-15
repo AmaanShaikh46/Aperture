@@ -16,12 +16,31 @@ async def create_message(
     sender_id: uuid.UUID,
     content: str,
 ):
+    if not isinstance(content, str):
+        raise HTTPException(
+            status_code=400,
+            detail="Message content must be text",
+        )
+
     content = content.strip()
 
     if not content:
         raise HTTPException(
             status_code=400,
             detail="Message content cannot be empty",
+        )
+
+    if len(content) > 10_000:
+        raise HTTPException(
+            status_code=413,
+            detail="Messages cannot exceed 10,000 characters.",
+        )
+
+    # Reject embedded null bytes and other non-text control characters.
+    if "\x00" in content:
+        raise HTTPException(
+            status_code=400,
+            detail="Message content contains unsupported characters",
         )
 
     # Verify the sender belongs to the conversation.

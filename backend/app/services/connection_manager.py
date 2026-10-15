@@ -1,4 +1,8 @@
+import logging
+
 from fastapi import WebSocket
+
+logger = logging.getLogger(__name__)
 
 
 class ConnectionManager:
@@ -7,42 +11,34 @@ class ConnectionManager:
 
     async def connect(self, user_id: str, websocket: WebSocket):
         await websocket.accept()
-
-        if user_id not in self.active_connections:
-            self.active_connections[user_id] = set()
-
-        self.active_connections[user_id].add(websocket)
+        self.active_connections.setdefault(user_id, set()).add(websocket)
 
     def disconnect(self, user_id: str, websocket: WebSocket):
         connections = self.active_connections.get(user_id)
-
         if not connections:
             return
 
         connections.discard(websocket)
-
         if not connections:
-            del self.active_connections[user_id]
+            self.active_connections.pop(user_id, None)
 
     async def send_to_user(self, user_id: str, message: dict):
         connections = self.active_connections.get(user_id)
-
         if not connections:
             return
 
-        disconnected = []
-
-        for websocket in connections:
+        # Snapshot before awaiting network I/O. The live set may change when
+        # another connection disconnects while this method is suspended.
+        for websocket in list(connections):
             try:
                 await websocket.send_json(message)
             except Exception:
-                disconnected.append(websocket)
-
-        for websocket in disconnected:
-            connections.discard(websocket)
-
-        if not connections:
-            self.active_connections.pop(user_id, None)
+                logger.debug(
+                    "Dropping an unavailable WebSocket for user %s",
+                    user_id,
+                    exc_info=True,
+                )
+                self.disconnect(user_id, websocket)
 
 
 manager = ConnectionManager()
