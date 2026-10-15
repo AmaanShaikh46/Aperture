@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     app_name: str = "Aperture API"
     app_version: str = "0.1.0"
     database_url: str
+    sql_echo: bool = False
 
     supabase_url: str
     supabase_secret_key: SecretStr

@@ -23,7 +23,12 @@ from app.database.database import get_db
 from app.models.attachment import Attachment
 from app.models.conversation_participants import ConversationParticipant
 from app.models.message import Message
-from app.services.media_service import create_storage_path, upload_file
+from app.services.media_service import (
+    MAX_FILE_SIZE,
+    create_storage_path,
+    upload_file,
+    validate_attachment_content,
+)
 from app.services.message_service import create_message
 from app.services.storage_service import get_storage_client
 
@@ -225,10 +230,11 @@ async def upload_attachment(
             detail="Conversation not found",
         )
 
-    max_file_size = 50 * 1024 * 1024
-    file_bytes = await file.read(max_file_size + 1)
+    # Bound the body read before validation; upstream request-size limits should
+    # also be configured in the ASGI server/reverse proxy for production.
+    file_bytes = await file.read(MAX_FILE_SIZE + 1)
 
-    if len(file_bytes) > max_file_size:
+    if len(file_bytes) > MAX_FILE_SIZE:
         raise HTTPException(
             status_code=413,
             detail="File exceeds the 50 MB upload limit.",
@@ -247,7 +253,25 @@ async def upload_attachment(
     if not original_name or original_name in {".", ".."}:
         original_name = "attachment"
 
-    content_type = file.content_type or "application/octet-stream"
+    original_name = "".join(
+        char for char in original_name
+        if ord(char) >= 32 and ord(char) != 127
+    )
+    if len(original_name) > 255:
+        raise HTTPException(
+            status_code=400,
+            detail="File names cannot exceed 255 characters.",
+        )
+
+    if len(caption) > 10_000:
+        raise HTTPException(
+            status_code=413,
+            detail="Attachment captions cannot exceed 10,000 characters.",
+        )
+
+    # Determine MIME type from the extension and inspected file content. Never
+    # persist a browser-supplied Content-Type without validation.
+    content_type = validate_attachment_content(file_bytes, original_name)
     message_id = uuid.uuid4()
 
     storage_path = create_storage_path(
