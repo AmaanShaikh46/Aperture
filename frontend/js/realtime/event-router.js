@@ -40,6 +40,7 @@ export const EventTypes = {
   CALL_ACCEPTED: 'call.accepted',
   CALL_REJECTED: 'call.rejected',
   CALL_ENDED: 'call.ended',
+  CALL_ERROR: 'call.error',
   ASSIST_TRANSCRIPT: 'assist.transcript',
   ASSIST_INTERPRETATION: 'assist.interpretation',
   ASSIST_CONFIRMATION: 'assist.confirmation',

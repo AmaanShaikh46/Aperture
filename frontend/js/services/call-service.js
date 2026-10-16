@@ -23,12 +23,13 @@ export async function getCall(callId) {
 }
 
 /** Initiate a new call to a user. */
-export async function createCall(userId) {
+export async function createCall(userId, callType = 'audio') {
   if (USE_MOCK_API) {
     const call = {
       id: `call-${uuid().slice(0, 8)}`,
       callerId: '00000000-0000-0000-0000-000000000001',
       calleeId: userId,
+      callType,
       displayName: 'Unknown',
       avatarUrl: '',
       direction: 'outgoing',
@@ -40,7 +41,7 @@ export async function createCall(userId) {
     mockCalls.unshift(call);
     return { ...call };
   }
-  return post('/api/calls', { userId });
+  return post('/api/calls', { userId, callType });
 }
 
 /** Accept an incoming call. */

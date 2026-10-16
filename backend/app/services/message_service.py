@@ -81,6 +81,7 @@ async def create_message(
             sender_id=sender_id,
             content=content,
             status="sent",
+            receipt_tracking_enabled=True,
         )
 
         db.add(message)

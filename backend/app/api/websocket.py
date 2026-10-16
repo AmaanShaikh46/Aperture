@@ -1,14 +1,16 @@
 import json
 import logging
 import uuid
+from datetime import datetime, timezone
 from json import JSONDecodeError
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.core.security import verify_access_token
 from app.database.database import AsyncSessionLocal
 from app.models.conversation_participants import ConversationParticipant
+from app.models.call_session import CallSession
 from app.services.connection_manager import manager
 from app.services.message_service import create_message
 
@@ -28,6 +30,161 @@ async def _send_protocol_error(websocket: WebSocket, detail: str) -> None:
     except Exception:
         # The client may have disconnected while the error was being sent.
         pass
+
+
+async def _send_call_error(websocket: WebSocket, detail: str) -> None:
+    try:
+        await websocket.send_json({"type": "call.error", "payload": {"detail": detail}})
+    except Exception:
+        pass
+
+
+async def _finish_calls_after_last_disconnect(user_id: str) -> None:
+    """Close persisted call sessions when a user's last signaling socket is gone."""
+    if manager.active_connections.get(user_id):
+        return
+
+    disconnected_user = uuid.UUID(user_id)
+    notifications: list[tuple[str, dict]] = []
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(CallSession)
+                .where(
+                    or_(
+                        CallSession.caller_id == disconnected_user,
+                        CallSession.callee_id == disconnected_user,
+                    ),
+                    CallSession.status.in_(["ringing", "accepted"]),
+                )
+                .with_for_update()
+            )
+            calls = list(result.scalars().all())
+            if not calls:
+                return
+
+            now = datetime.now(timezone.utc)
+            for call in calls:
+                disconnected_is_caller = call.caller_id == disconnected_user
+                other_user_id = call.callee_id if disconnected_is_caller else call.caller_id
+                old_status = call.status
+                if old_status == "accepted":
+                    call.status = "completed"
+                    event_type = "call.ended"
+                elif disconnected_is_caller:
+                    call.status = "cancelled"
+                    event_type = "call.ended"
+                else:
+                    call.status = "rejected"
+                    event_type = "call.rejected"
+                call.ended_at = now
+                call.ended_by = disconnected_user
+                notifications.append((str(other_user_id), {
+                    "type": event_type,
+                    "payload": {
+                        "callId": str(call.id),
+                        "status": call.status,
+                        "endedBy": user_id,
+                    },
+                }))
+            await db.commit()
+    except Exception:
+        logger.exception("Could not close calls after WebSocket disconnect for user %s", user_id)
+        return
+
+    for target_user_id, event in notifications:
+        try:
+            await manager.send_to_user(target_user_id, event)
+        except Exception:
+            logger.exception("Could not notify peer after call disconnect")
+
+
+async def _handle_call_signal(
+    websocket: WebSocket,
+    user_id: str,
+    event_type: str,
+    payload: dict,
+) -> None:
+    """Authorize and relay a WebRTC offer, answer, or ICE candidate."""
+    try:
+        call_id = uuid.UUID(str(payload.get("callId", "")))
+    except (ValueError, TypeError, AttributeError):
+        await _send_call_error(websocket, "Invalid call ID.")
+        return
+
+    if event_type in {"call.offer", "call.answer"}:
+        description_key = "offer" if event_type == "call.offer" else "answer"
+        description = payload.get(description_key)
+        expected_sdp_type = description_key
+        if (
+            not isinstance(description, dict)
+            or description.get("type") != expected_sdp_type
+            or not isinstance(description.get("sdp"), str)
+            or not description["sdp"]
+            or len(description["sdp"]) > 50_000
+        ):
+            await _send_call_error(websocket, f"Invalid WebRTC {description_key}.")
+            return
+        relay_value = {description_key: description}
+    else:
+        candidate = payload.get("candidate")
+        if not isinstance(candidate, dict):
+            await _send_call_error(websocket, "Invalid ICE candidate.")
+            return
+        allowed_keys = {"candidate", "sdpMid", "sdpMLineIndex", "usernameFragment"}
+        if set(candidate) - allowed_keys:
+            await _send_call_error(websocket, "Invalid ICE candidate fields.")
+            return
+        candidate_line = candidate.get("candidate")
+        if not isinstance(candidate_line, str) or len(candidate_line) > 8_192:
+            await _send_call_error(websocket, "Invalid ICE candidate value.")
+            return
+        if candidate.get("sdpMid") is not None and not isinstance(candidate.get("sdpMid"), str):
+            await _send_call_error(websocket, "Invalid ICE candidate media ID.")
+            return
+        if candidate.get("sdpMLineIndex") is not None and not isinstance(candidate.get("sdpMLineIndex"), int):
+            await _send_call_error(websocket, "Invalid ICE candidate media index.")
+            return
+        relay_value = {"candidate": candidate}
+
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(CallSession).where(CallSession.id == call_id))
+            call = result.scalar_one_or_none()
+            if call is None or user_id not in {str(call.caller_id), str(call.callee_id)}:
+                await _send_call_error(websocket, "Call not found.")
+                return
+            if call.status != "accepted":
+                await _send_call_error(websocket, "Call is not active for signaling.")
+                return
+
+            sender_is_caller = user_id == str(call.caller_id)
+            if event_type == "call.offer" and not sender_is_caller:
+                await _send_call_error(websocket, "Only the caller can send the initial offer.")
+                return
+            if event_type == "call.answer" and sender_is_caller:
+                await _send_call_error(websocket, "Only the call recipient can answer the offer.")
+                return
+
+            recipient_id = str(call.callee_id if sender_is_caller else call.caller_id)
+            relay_payload = {
+                "callId": str(call.id),
+                "fromUserId": user_id,
+                **relay_value,
+            }
+    except Exception:
+        logger.exception("Call signaling lookup failed")
+        await _send_call_error(websocket, "Could not process call signaling right now.")
+        return
+
+    try:
+        await manager.send_to_user(
+            recipient_id,
+            {"type": event_type, "payload": relay_payload},
+        )
+    except Exception:
+        logger.exception("Call signaling relay failed for call %s", call_id)
+        await _send_call_error(websocket, "Could not deliver call signaling.")
 
 
 @router.websocket("/ws")
@@ -78,11 +235,19 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
                 continue
 
-            if data.get("type") != "message.send":
-                # Other event types are not supported by this backend handler yet.
+            event_type = data.get("type")
+            payload = data.get("payload")
+            if event_type in {"call.offer", "call.answer", "call.ice"}:
+                if not isinstance(payload, dict):
+                    await _send_call_error(websocket, "Call signaling payload must be a JSON object.")
+                    continue
+                await _handle_call_signal(websocket, user_id, event_type, payload)
                 continue
 
-            payload = data.get("payload")
+            if event_type != "message.send":
+                # Call lifecycle changes are REST operations; other unknown events are ignored.
+                continue
+
             if not isinstance(payload, dict):
                 await _send_protocol_error(
                     websocket, "Message payload must be a JSON object."
@@ -110,19 +275,27 @@ async def websocket_endpoint(websocket: WebSocket):
 
             try:
                 async with AsyncSessionLocal() as db:
-                    message = await create_message(
-                        db=db,
-                        conversation_id=conversation_id,
-                        sender_id=sender_id,
-                        content=content,
-                    )
-
+                    # Resolve/authorize recipients before create_message commits.
+                    # Avoid a post-commit query failure making an already-saved
+                    # message look failed and causing the client to retry it.
                     result = await db.execute(
                         select(ConversationParticipant.user_id).where(
                             ConversationParticipant.conversation_id == conversation_id
                         )
                     )
                     participant_ids = result.scalars().all()
+                    if sender_id not in participant_ids:
+                        raise HTTPException(
+                            status_code=404,
+                            detail="Conversation not found",
+                        )
+
+                    message = await create_message(
+                        db=db,
+                        conversation_id=conversation_id,
+                        sender_id=sender_id,
+                        content=content,
+                    )
 
             except HTTPException as exc:
                 await _send_protocol_error(websocket, str(exc.detail))
@@ -146,6 +319,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 "content": message.content,
                 "createdAt": message.created_at.isoformat(),
                 "status": message.status,
+                "receiptTrackingEnabled": bool(message.receipt_tracking_enabled),
                 "receipts": [
                     {"userId": str(participant_id), "status": "unread", "readAt": None}
                     for participant_id in participant_ids
@@ -169,3 +343,7 @@ async def websocket_endpoint(websocket: WebSocket):
         pass
     finally:
         manager.disconnect(user_id, websocket)
+        try:
+            await _finish_calls_after_last_disconnect(user_id)
+        except Exception:
+            logger.exception("Call cleanup after WebSocket disconnect failed")

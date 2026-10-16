@@ -65,7 +65,8 @@ function renderContacts() {
           </div>
           <div class="contact-actions">
             <button class="btn btn-sm btn-outline-primary contact-chat-btn" data-user-id="${contact.id}" aria-label="Chat with ${escapeHtml(contact.displayName)}"><i class="bi bi-chat-dots"></i></button>
-            <button class="btn btn-sm btn-outline-success contact-call-btn" data-user-id="${contact.id}" aria-label="Call ${escapeHtml(contact.displayName)}"><i class="bi bi-telephone"></i></button>
+            <button class="btn btn-sm btn-outline-success contact-call-btn" data-user-id="${contact.id}" aria-label="Audio call ${escapeHtml(contact.displayName)}"><i class="bi bi-telephone"></i></button>
+            <button class="btn btn-sm btn-outline-primary contact-video-call-btn" data-user-id="${contact.id}" aria-label="Video call ${escapeHtml(contact.displayName)}"><i class="bi bi-camera-video"></i></button>
             <button class="btn btn-sm btn-outline-danger contact-remove-btn" data-user-id="${contact.id}" aria-label="Remove ${escapeHtml(contact.displayName)}"><i class="bi bi-person-dash"></i></button>
           </div>
         </div>`;
@@ -76,7 +77,10 @@ function renderContacts() {
     btn.addEventListener('click', () => openChat(btn.dataset.userId));
   });
   listEl.querySelectorAll('.contact-call-btn').forEach((btn) => {
-    btn.addEventListener('click', () => callContact(btn.dataset.userId));
+    btn.addEventListener('click', () => callContact(btn.dataset.userId, 'audio'));
+  });
+  listEl.querySelectorAll('.contact-video-call-btn').forEach((btn) => {
+    btn.addEventListener('click', () => callContact(btn.dataset.userId, 'video'));
   });
   listEl.querySelectorAll('.contact-remove-btn').forEach((btn) => {
     btn.addEventListener('click', () => removeContactHandler(btn.dataset.userId));
@@ -160,8 +164,8 @@ async function openChat(userId) {
 }
 
 /** Call a contact. */
-async function callContact(userId) {
-  window.location.href = `calls.html?action=call&user=${userId}`;
+async function callContact(userId, callType = 'audio') {
+  window.location.href = `calls.html?action=call&user=${encodeURIComponent(userId)}&type=${encodeURIComponent(callType)}`;
 }
 
 /** Clean up. */
