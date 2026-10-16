@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.conversations import router as conversations_router
+from app.api.calls import router as calls_router
 
 from app.api.messages import router as messages_router
 
@@ -37,6 +38,11 @@ app.include_router(
 
 app.include_router(
     messages_router,
+    prefix="/api",
+)
+
+app.include_router(
+    calls_router,
     prefix="/api",
 )
 

@@ -10,25 +10,40 @@ let pc = null;
 let remoteStream = null;
 let onRemoteTrackCb = null;
 let onStateChangeCb = null;
+let activeCallId = null;
+let pendingIceCandidates = [];
 
 /** Create a new RTCPeerConnection with ICE servers from the backend. */
-export async function createPeerConnection() {
+export async function createPeerConnection(callId) {
   if (pc) closePeerConnection();
+  activeCallId = callId || null;
+  pendingIceCandidates = [];
   const iceServers = await getIceServers();
   pc = new RTCPeerConnection({ iceServers });
 
   remoteStream = new MediaStream();
 
   pc.ontrack = (event) => {
-    event.streams[0].getTracks().forEach((track) => {
-      remoteStream.addTrack(track);
+    const tracks = event.streams?.[0]?.getTracks?.() || [event.track].filter(Boolean);
+    tracks.forEach((track) => {
+      if (!remoteStream.getTracks().some((existing) => existing.id === track.id)) {
+        remoteStream.addTrack(track);
+      }
     });
     if (onRemoteTrackCb) onRemoteTrackCb(remoteStream);
   };
 
   pc.onicecandidate = (event) => {
-    if (event.candidate) {
-      signaling.sendIceCandidate(event.candidate);
+    if (event.candidate && activeCallId) {
+      const candidate = typeof event.candidate.toJSON === 'function'
+        ? event.candidate.toJSON()
+        : {
+            candidate: event.candidate.candidate,
+            sdpMid: event.candidate.sdpMid,
+            sdpMLineIndex: event.candidate.sdpMLineIndex,
+            usernameFragment: event.candidate.usernameFragment,
+          };
+      signaling.sendIceCandidate(candidate, activeCallId);
     }
   };
 
@@ -72,11 +87,20 @@ export async function createAnswer() {
 export async function setRemoteDescription(description) {
   if (!pc) throw new Error('No peer connection.');
   await pc.setRemoteDescription(description);
+  const queued = pendingIceCandidates;
+  pendingIceCandidates = [];
+  for (const candidate of queued) {
+    await pc.addIceCandidate(candidate);
+  }
 }
 
-/** Add a remote ICE candidate. */
+/** Add a remote ICE candidate, buffering candidates until remote SDP is set. */
 export async function addIceCandidate(candidate) {
-  if (!pc) return;
+  if (!pc || !candidate) return;
+  if (!pc.remoteDescription) {
+    pendingIceCandidates.push(candidate);
+    return;
+  }
   await pc.addIceCandidate(candidate);
 }
 
@@ -106,6 +130,8 @@ export function closePeerConnection() {
     pc = null;
   }
   remoteStream = null;
+  activeCallId = null;
+  pendingIceCandidates = [];
 }
 
 /** Get the current peer connection (or null). */

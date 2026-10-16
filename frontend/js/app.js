@@ -7,6 +7,7 @@ import { auth } from './services/auth-service.js';
 import { connectWebSocket, disconnectWebSocket, onWebSocketStateChange, WsState } from './realtime/websocket-client.js';
 import { initTheme, showToast, queryParam } from './utils.js';
 import { USE_MOCK_API } from './config.js';
+import { initializeCallRuntime, destroyCallRuntime } from './webrtc/call-controller.js';
 
 let currentPage = null;
 let currentPageDestroy = null;
@@ -27,6 +28,7 @@ export async function startApp() {
 
   renderLayout();
   setupNavigation();
+  initializeCallRuntime();
   setupWebSocket();
 
   // Route to the initial page.
@@ -212,6 +214,7 @@ function setupWebSocket() {
 export function cleanupApp() {
   if (wsStateUnsub) wsStateUnsub();
   if (currentPageDestroy) { try { currentPageDestroy(); } catch (e) { /* ignore */ } }
+  void destroyCallRuntime();
   disconnectWebSocket();
 }
 

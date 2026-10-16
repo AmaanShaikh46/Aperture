@@ -28,10 +28,30 @@
       <main class="app-main" id="app-main" role="main"></main>
     </div>
     <script type="module">
-      import { initCallsPage } from './js/pages/calls-page.js';
+      import { auth } from './js/services/auth-service.js';
+      import { connectWebSocket, disconnectWebSocket } from './js/realtime/websocket-client.js';
+      import { initCallsPage, destroyCallsPage } from './js/pages/calls-page.js';
+      import { initializeCallRuntime, destroyCallRuntime } from './js/webrtc/call-controller.js';
       import { initTheme } from './js/utils.js';
-      initTheme();
-      initCallsPage(document.getElementById('app-main'));
+
+      async function bootCallsPage() {
+        initTheme();
+        const session = await auth.getSession();
+        if (!session) {
+          window.location.href = 'login.html';
+          return;
+        }
+        initializeCallRuntime();
+        connectWebSocket();
+        await initCallsPage(document.getElementById('app-main'));
+      }
+
+      void bootCallsPage();
+      window.addEventListener('beforeunload', () => {
+        destroyCallsPage();
+        void destroyCallRuntime();
+        disconnectWebSocket();
+      });
     </script>
   </body>
 </html>

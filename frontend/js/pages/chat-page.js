@@ -37,6 +37,7 @@ import {
   debounce
 } from '../utils.js';
 import { searchUsers } from '../services/user-service.js';
+import { startOutgoingCall } from '../webrtc/call-controller.js';
 
 
 let currentUser = null;
@@ -1401,6 +1402,15 @@ function renderPersonAvatar(element, displayName, avatarUrl) {
 /** Open a conversation and load its messages. */
 async function openConversation(conversationId) {
   activeConversationId = conversationId;
+  const selectedConversation = conversations.find(
+    (conversation) => String(conversation.id) === String(conversationId)
+  );
+  // Calling is one-to-one only; never show call controls for group conversations.
+  const callTargetUserId = selectedConversation && selectedConversation.type !== 'group'
+    && selectedConversation.participantId
+    ? String(selectedConversation.participantId)
+    : null;
+  const callTargetName = selectedConversation?.participantName || 'contact';
   renderConversationList();
   const chatArea = document.getElementById('chat-area');
   chatArea.innerHTML = `
@@ -1412,6 +1422,29 @@ async function openConversation(conversationId) {
           <div class="chat-header-status" id="chat-header-status">...</div>
         </div>
       </div>
+
+      ${callTargetUserId ? `
+        <div class="chat-header-call-actions" role="group" aria-label="Call controls">
+          <button
+            id="chat-audio-call-btn"
+            class="btn btn-sm btn-link"
+            type="button"
+            aria-label="Audio call ${escapeHtml(callTargetName)}"
+            title="Audio call"
+          >
+            <i class="bi bi-telephone" aria-hidden="true"></i>
+          </button>
+          <button
+            id="chat-video-call-btn"
+            class="btn btn-sm btn-link"
+            type="button"
+            aria-label="Video call ${escapeHtml(callTargetName)}"
+            title="Video call"
+          >
+            <i class="bi bi-camera-video" aria-hidden="true"></i>
+          </button>
+        </div>
+      ` : ''}
 
       <button
         id="group-info-btn"
@@ -1607,6 +1640,15 @@ async function openConversation(conversationId) {
 
   document.getElementById('message-explorer-btn')?.addEventListener('click', () => {
     openMessageExplorer('all');
+  });
+
+  // Reuse the shared call controller so chat-header calls follow the same
+  // authenticated REST lifecycle, WebSocket signaling, and media cleanup.
+  document.getElementById('chat-audio-call-btn')?.addEventListener('click', () => {
+    void startOutgoingCall(callTargetUserId, 'audio');
+  });
+  document.getElementById('chat-video-call-btn')?.addEventListener('click', () => {
+    void startOutgoingCall(callTargetUserId, 'video');
   });
 
   const input = document.getElementById('message-input');

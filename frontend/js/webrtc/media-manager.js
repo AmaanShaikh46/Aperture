@@ -14,6 +14,7 @@ export async function getLocalStream(withVideo = false) {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     throw new Error('Media devices are not available in this browser.');
   }
+  if (localStream) stopLocalStream();
   localStream = await navigator.mediaDevices.getUserMedia(constraints);
   return localStream;
 }
@@ -44,8 +45,18 @@ export function setMuted(muted) {
 
 /** Enable or disable speaker output (toggles audio output on the remote stream). */
 export function setSpeakerEnabled(enabled) {
-  const remoteAudios = document.querySelectorAll('audio.remote-audio');
-  remoteAudios.forEach((a) => { a.volume = enabled ? 1.0 : 0.0; });
+  const remoteMedia = document.querySelectorAll('audio.remote-audio, video.remote-video');
+  remoteMedia.forEach((element) => { element.volume = enabled ? 1.0 : 0.0; });
+}
+
+/** Toggle local camera tracks. Returns true when video is enabled. */
+export function toggleVideo() {
+  if (!localStream) return false;
+  const tracks = localStream.getVideoTracks();
+  if (!tracks.length) return false;
+  const enabled = !tracks[0].enabled;
+  tracks.forEach((track) => { track.enabled = enabled; });
+  return enabled;
 }
 
 /** Stop all tracks and release the local stream. */
@@ -69,6 +80,7 @@ export const mediaManager = {
   toggleMute,
   setMuted,
   setSpeakerEnabled,
+  toggleVideo,
   stopLocalStream,
   isMuted,
 };
