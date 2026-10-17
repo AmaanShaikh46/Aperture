@@ -47,18 +47,6 @@ function notify(message, variant = 'warning') {
   notice._dismissTimer = setTimeout(() => { notice.hidden = true; }, 5000);
 }
 
-function ensureStyles() {
-  if (document.querySelector('link[data-aperture-call-styles]')) return;
-  const alreadyLoaded = [...document.querySelectorAll('link[rel="stylesheet"]')]
-    .some((link) => link.href.includes('/css/calls.css'));
-  if (alreadyLoaded) return;
-  const link = document.createElement('link');
-  link.rel = 'stylesheet';
-  link.href = './css/calls.css';
-  link.dataset.apertureCallStyles = 'true';
-  document.head.appendChild(link);
-}
-
 function ensureOverlay() {
   let overlay = document.getElementById('call-overlay');
   if (!overlay) {
@@ -468,7 +456,6 @@ function cleanupCall(refreshHistory) {
 export function initializeCallRuntime() {
   if (initialized) return;
   initialized = true;
-  ensureStyles();
   ensureOverlay();
 
   onRemoteTrack((stream) => attachRemoteStream(stream));
