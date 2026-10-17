@@ -1,7 +1,7 @@
 fastapi
 uvicorn[standard]
 
-sqlalchemy
+SQLAlchemy[asyncio]>=2.0,<2.1
 asyncpg
 alembic
 
