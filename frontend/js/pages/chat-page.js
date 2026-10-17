@@ -1402,6 +1402,11 @@ function renderPersonAvatar(element, displayName, avatarUrl) {
 /** Open a conversation and load its messages. */
 async function openConversation(conversationId) {
   activeConversationId = conversationId;
+
+  document
+    .querySelector('.chat-shell')
+    ?.classList.add('has-active-conversation');
+
   const selectedConversation = conversations.find(
     (conversation) => String(conversation.id) === String(conversationId)
   );
@@ -1415,8 +1420,18 @@ async function openConversation(conversationId) {
   const chatArea = document.getElementById('chat-area');
   chatArea.innerHTML = `
     <div class="chat-header" id="chat-header">
-      <div class="chat-header-info">
-        <div class="avatar" id="chat-header-avatar"></div>
+    <div class="chat-header-info">
+      <button
+        type="button"
+        id="chat-back-btn"
+        class="chat-back-btn btn btn-sm btn-link"
+        aria-label="Back to conversations"
+        title="Back to conversations"
+      >
+        <i class="bi bi-arrow-left" aria-hidden="true"></i>
+      </button>
+
+      <div class="avatar" id="chat-header-avatar"></div>
         <div>
           <div class="chat-header-name" id="chat-header-name">Loading...</div>
           <div class="chat-header-status" id="chat-header-status">...</div>
@@ -1538,6 +1553,14 @@ async function openConversation(conversationId) {
       class="message-explorer"
       hidden
     ></aside>`;
+
+    document
+  .getElementById('chat-back-btn')
+  ?.addEventListener('click', () => {
+    document
+      .querySelector('.chat-shell')
+      ?.classList.remove('has-active-conversation');
+  });
 
     const conv = conversations.find((c) => c.id === conversationId);
 
