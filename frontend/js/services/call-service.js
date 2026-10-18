@@ -7,6 +7,14 @@ import { get, post } from './api-client.js';
 import { mockCalls } from '../mock/mock-data.js';
 import { uuid } from '../utils.js';
 
+// Metered TURN configuration.
+const METERED_CREDENTIALS_URL =
+  'https://aperture-calls.metered.live/api/v1/turn/credentials';
+
+const METERED_API_KEY = import.meta.env.VITE_METERED_API_KEY || '';
+
+let cachedMeteredIceServers = null;
+
 /** List call history. */
 export async function getCalls() {
   if (USE_MOCK_API) return mockCalls.map((c) => ({ ...c }));
@@ -80,13 +88,79 @@ export async function endCall(callId) {
 
 /**
  * Get ICE servers for WebRTC.
- * Currently returns static STUN config. When the backend provides
- * short-lived TURN credentials, this function will fetch them from the API.
+ * Uses Metered TURN when available and preserves Google STUN as fallback.
  */
 export async function getIceServers() {
-  if (USE_MOCK_API) return [...ICE_SERVERS];
-  // Future: const creds = await get('/api/calls/ice-servers'); return creds;
-  return [...ICE_SERVERS];
+
+  if (USE_MOCK_API) {
+    return [...ICE_SERVERS];
+  }
+
+  // Reuse a previously successful Metered response.
+  if (cachedMeteredIceServers) {
+    return [...ICE_SERVERS, ...cachedMeteredIceServers];
+  }
+
+  // Allow the app to continue using STUN if no key is configured.
+  if (!METERED_API_KEY) {
+    console.warn(
+      '[webrtc] Metered API key is missing. Using STUN fallback.',
+    );
+    return [...ICE_SERVERS];
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+  try {
+    const url = new URL(METERED_CREDENTIALS_URL);
+    url.searchParams.set('apiKey', METERED_API_KEY);
+
+    const response = await fetch(url.toString(), {
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Metered returned HTTP ${response.status}`);
+    }
+
+    const meteredServers = await response.json();
+
+    // Do not accept an invalid response or a response without TURN servers
+    const hasTurnServer = Array.isArray(meteredServers)
+      && meteredServers.some((server) => {
+        const urls = Array.isArray(server.urls)
+          ? server.urls
+          : [server.urls];
+
+        return urls.some(
+          (serverUrl) =>
+            typeof serverUrl === 'string'
+            && /^(turn|turns):/i.test(serverUrl),
+        );
+      });
+
+    if (!hasTurnServer) {
+      throw new Error('Metered response contains no TURN servers');
+    }
+
+    // Cache only a successfully validated response.
+    cachedMeteredIceServers = meteredServers;
+
+    console.info('[webrtc] Metered TURN configuration loaded.');
+
+    // Keep the existing Google STUN configuration.
+    return [...ICE_SERVERS, ...meteredServers];
+  } catch {
+
+    console.warn(
+      '[webrtc] Metered TURN unavailable. Falling back to STUN.',
+    );
+
+    return [...ICE_SERVERS];
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 export default {
