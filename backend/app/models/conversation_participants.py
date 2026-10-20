@@ -17,6 +17,7 @@ class ConversationParticipant(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("profiles.id", ondelete="CASCADE"),
         primary_key=True,
+        index=True,
     )
 
     role: Mapped[str] = mapped_column(

@@ -15,13 +15,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_user
 from app.database.database import get_db
-from app.models.contacts import Contact
+from app.models.friendship import Friendship
 from app.models.profiles import Profile
 from app.schemas.contact import ContactCreate
 from app.schemas.user import ProfileUpdate, UserSearchResult
 from app.services.storage_service import get_storage_client
 
 from app.services.profile_events import broadcast_profile_updated
+from app.services.friendship_service import get_relationship_state
 
 router = APIRouter(
     prefix="/users",
@@ -345,15 +346,21 @@ async def search_users(
     )
 
     profiles = result.scalars().all()
-    return [
-        UserSearchResult(
-            id=str(profile.id),
-            username=profile.username,
-            display_name=profile.display_name,
-            avatar_url=profile.avatar_url,
+    current_user_id = uuid.UUID(current_user["id"])
+    search_results = []
+    for profile in profiles:
+        relationship = await get_relationship_state(db, current_user_id, profile.id)
+        search_results.append(
+            UserSearchResult(
+                id=str(profile.id),
+                username=profile.username,
+                display_name=profile.display_name,
+                avatar_url=profile.avatar_url,
+                relationship_status=relationship["relationshipStatus"],
+                friend_request_id=relationship["friendRequestId"],
+            )
         )
-        for profile in profiles
-    ]
+    return search_results
 
 
 @router.post("/contacts")
@@ -362,23 +369,12 @@ async def add_contact(
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    contact = Contact(
-        user_id=current_user["id"],
-        contact_user_id=contact_data.contact_user_id,
+    # Keep a clear response for clients still using the old unilateral-contact
+    # endpoint. Relationships now require a friend request and acceptance.
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Contacts now require mutual friendship. Send a friend request through /api/v1/users/friend-requests.",
     )
-
-    db.add(contact)
-    await db.commit()
-    await db.refresh(contact)
-
-    return {
-        "contact": {
-            "id": str(contact.id),
-            "user_id": str(contact.user_id),
-            "contact_user_id": str(contact.contact_user_id),
-            "created_at": contact.created_at,
-        }
-    }
 
 
 @router.get("/contacts")
@@ -386,28 +382,26 @@ async def get_contacts(
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    # Backward-compatible read alias: the contact list now means accepted friends.
     current_user_id = uuid.UUID(current_user["id"])
-
     result = await db.execute(
         select(Profile)
         .join(
-            Contact,
-            Contact.contact_user_id == Profile.id,
+            Friendship,
+            or_(
+                (Friendship.user_low_id == current_user_id) & (Friendship.user_high_id == Profile.id),
+                (Friendship.user_high_id == current_user_id) & (Friendship.user_low_id == Profile.id),
+            ),
         )
-        .where(
-            Contact.user_id == current_user_id
-        )
-        .order_by(Profile.display_name)
+        .where(Profile.id != current_user_id)
+        .order_by(Profile.display_name, Profile.username)
     )
-
-    profiles = result.scalars().all()
-
     return [
         {
             "id": str(profile.id),
             "username": profile.username,
-            "displayName": profile.display_name,
+            "displayName": profile.display_name or profile.username or "Unknown",
             "avatarUrl": profile.avatar_url,
         }
-        for profile in profiles
+        for profile in result.scalars().all()
     ]

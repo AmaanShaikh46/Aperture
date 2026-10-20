@@ -35,6 +35,7 @@ from app.services.media_service import (
     validate_attachment_content,
 )
 from app.services.message_service import create_message
+from app.services.friendship_service import require_direct_conversation_friendship
 from app.services.storage_service import get_storage_client
 
 
@@ -413,6 +414,9 @@ async def upload_attachment(
             detail="Conversation not found",
         )
 
+    # Check friendship before accepting or uploading a potentially large file.
+    await require_direct_conversation_friendship(db, conversation_id, current_user_id)
+
     # Bound the body read before validation; upstream request-size limits should
     # also be configured in the ASGI server/reverse proxy for production.
     file_bytes = await file.read(MAX_FILE_SIZE + 1)
@@ -510,7 +514,7 @@ async def upload_attachment(
     try:
         db.add(message)
         await db.flush()
-        
+
         db.add(attachment)
         for recipient_id in participant_ids:
             if recipient_id != current_user_id:

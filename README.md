@@ -39,13 +39,13 @@ The live deployment uses limited hosted-service resources. For evaluation, pleas
 
 - **User presence:** showing when users are online or offline and keeping presence information up to date.
 - **Voice Assist:** the project has an accessibility-focused interface and a browser-based speech input/output foundation. The complete flow for interpreting a user's intention, identifying the correct contact, displaying confidence, and safely carrying out the requested action is still being developed.
+- **Friend requests and accepted friendships:** the code now includes friend requests, accept/reject actions, and friendship checks for direct messages and calls. This change needs its database migration and deployment before it is available in the live demo.
 
 ### Planned
 
 - **Voice commands for messaging and calls:** a user should be able to say commands such as “Call Shivratn” or “Message Shivratn” and have Aperture interpret and carry out the intended action.
 - **Confidence and contact selection:** show the raw speech transcript alongside Aperture's interpretation and a confidence level. Contact matching should consider the user's previous interactions. If a command could refer to more than one person, Aperture should ask the user to clarify instead of silently choosing the wrong contact.
 - **Video Assist with hand-sign recognition:** recognize supported hand signs during a video call and convert them into displayed text or an interpreted sequence. The recognition prototype and the final behaviour are still being planned; integration into Aperture has not been completed.
-- **Friend requests:** add a request and accept/reject process so users do not automatically become available for direct messaging simply because one user selects another.
 
 The status above distinguishes existing application functionality from features that are still being developed or planned. Planned features should not be considered available in the live demo yet.
 
@@ -153,7 +153,18 @@ CORS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 
 Keep the backend secret key in the backend environment only. Never commit `.env` files or put backend secrets in frontend variables.
 
-Apply database migrations:
+Before applying migrations, run the automated backend checks and the read-only data preflight:
+
+```powershell
+python -m pytest -q
+python scripts/friendship_migration_preflight.py
+```
+
+The preflight reports duplicate direct conversations that will be consolidated and stops the migration workflow if a malformed direct conversation contains message history. Back up the database and test the migration against a separate staging database before applying it to production.
+
+The chat-list endpoint batches participant, latest-message, attachment, and friendship lookups rather than issuing database queries per conversation. The friendship migration also adds indexes for conversation membership and newest-message lookups. These reduce database round trips and history scans as the number of chats grows.
+
+Apply database migrations only after the preflight and backup are complete:
 
 ```powershell
 alembic upgrade head
@@ -230,7 +241,7 @@ Useful backend checks:
 - Call quality and connection success depend on the browser, permissions, network, and TURN service availability.
 - User presence and the complete Voice Assist command flow are still being developed.
 - Video Assist hand-sign recognition has not yet been integrated into the main application.
-- Friend requests and accept/reject controls are not implemented yet; the current contact-to-chat flow does not use that planned approval step.
+- The friendship changes are prepared in the source code but are not active in the live demo until the database migration and backend/frontend deployments are completed.
 - The live demo uses hosted services with limited resources. Large uploads and repeated account creation should be avoided during evaluation.
 - Aperture is a student project and should not be treated as a production communication service for sensitive or critical conversations.
 
