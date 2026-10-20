@@ -5,9 +5,13 @@ import logging
 from app.services.connection_manager import manager
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
+from sqlalchemy.orm import aliased
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.attachment import Attachment
+from app.models.friend_request import FriendRequest
+from app.models.friendship import Friendship
 
 from datetime import datetime, timezone
 
@@ -18,6 +22,7 @@ from app.models.conversation_participants import ConversationParticipant
 from app.models.profiles import Profile
 
 from app.models.message import Message
+from app.services.friendship_service import canonical_pair, get_relationship_state, require_friends
 
 router = APIRouter()
 
@@ -140,6 +145,8 @@ async def create_conversation(
             "participantId": None,
             "participantName": conversation.name,
             "participantAvatar": None,
+            "relationshipStatus": "group",
+            "friendRequestId": None,
             "participants": [],
             "lastMessage": None,
             "unreadCount": 0,
@@ -178,48 +185,51 @@ async def create_conversation(
             detail="User not found",
         )
 
+    # Keep scalar profile values available even if a concurrent insert forces a
+    # transaction rollback, which expires ORM instances in SQLAlchemy.
+    target_user_id_text = str(target_user.id)
+    target_display_name = target_user.display_name or target_user.username or "Unknown"
+    target_avatar_url = target_user.avatar_url
+
+    # Direct conversations can only be created/retrieved after the friendship
+    # has been accepted. The database's canonical-pair unique constraint is the
+    # final protection against two concurrent requests creating duplicate DMs.
+    await require_friends(db, current_user_id, target_user_id)
+    low_id, high_id = canonical_pair(current_user_id, target_user_id)
+
     result = await db.execute(
-        select(Conversation)
-        .join(
-            ConversationParticipant,
-            ConversationParticipant.conversation_id == Conversation.id,
-        )
-        .where(
+        select(Conversation).where(
             Conversation.type == "direct",
-            ConversationParticipant.user_id == current_user_id,
+            Conversation.direct_user_low_id == low_id,
+            Conversation.direct_user_high_id == high_id,
         )
     )
+    existing = result.scalar_one_or_none()
+    if existing is not None:
+        return {
+            "id": str(existing.id),
+            "type": existing.type,
+            "participantId": target_user_id_text,
+            "participantName": target_display_name,
+            "participantAvatar": target_avatar_url,
+            "relationshipStatus": "friends",
+            "friendRequestId": None,
+            "participants": [],
+            "lastMessage": None,
+            "unreadCount": 0,
+            "createdAt": existing.created_at,
+            "updatedAt": existing.updated_at,
+        }
 
-    conversations = result.scalars().all()
-
-    for conversation in conversations:
-        result = await db.execute(
-            select(ConversationParticipant.user_id).where(
-                ConversationParticipant.conversation_id == conversation.id
-            )
-        )
-
-        participant_ids = set(result.scalars().all())
-
-        if participant_ids == {current_user_id, target_user_id}:
-            return {
-                "id": str(conversation.id),
-                "type": conversation.type,
-                "participantId": str(target_user.id),
-                "participantName": target_user.display_name,
-                "participantAvatar": target_user.avatar_url,
-                "lastMessage": None,
-                "unreadCount": 0,
-                "createdAt": conversation.created_at,
-                "updatedAt": conversation.updated_at,
-            }
-
-    conversation = Conversation(type="direct")
+    conversation = Conversation(
+        type="direct",
+        direct_user_low_id=low_id,
+        direct_user_high_id=high_id,
+    )
 
     try:
         db.add(conversation)
         await db.flush()
-
         db.add_all([
             ConversationParticipant(
                 conversation_id=conversation.id,
@@ -232,10 +242,22 @@ async def create_conversation(
                 role="member",
             ),
         ])
-
         await db.commit()
         await db.refresh(conversation)
-
+    except IntegrityError:
+        await db.rollback()
+        # Another request may have created the same pair after our initial
+        # lookup. Retrieve the uniquely constrained row instead of duplicating it.
+        result = await db.execute(
+            select(Conversation).where(
+                Conversation.type == "direct",
+                Conversation.direct_user_low_id == low_id,
+                Conversation.direct_user_high_id == high_id,
+            )
+        )
+        conversation = result.scalar_one_or_none()
+        if conversation is None:
+            raise
     except Exception:
         await db.rollback()
         raise
@@ -243,9 +265,12 @@ async def create_conversation(
     return {
         "id": str(conversation.id),
         "type": conversation.type,
-        "participantId": str(target_user.id),
-        "participantName": target_user.display_name,
-        "participantAvatar": target_user.avatar_url,
+        "participantId": target_user_id_text,
+        "participantName": target_display_name,
+        "participantAvatar": target_avatar_url,
+        "relationshipStatus": "friends",
+        "friendRequestId": None,
+        "participants": [],
         "lastMessage": None,
         "unreadCount": 0,
         "createdAt": conversation.created_at,
@@ -257,39 +282,138 @@ async def get_conversations(
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """Return the user's conversation list with a bounded number of DB queries.
+
+    The old implementation performed several queries inside the per-conversation
+    loop. With N conversations that caused roughly 4N-6N round trips to the
+    hosted database. This implementation batches participants, latest messages,
+    latest-message attachments, and relationship state so response latency does
+    not grow linearly with the number of chats.
+    """
     current_user_id = uuid.UUID(current_user["id"])
 
-    # Get conversations the current user belongs to.
     result = await db.execute(
         select(Conversation)
         .join(
             ConversationParticipant,
             ConversationParticipant.conversation_id == Conversation.id,
         )
-        .where(
-            ConversationParticipant.user_id == current_user_id
-        )
+        .where(ConversationParticipant.user_id == current_user_id)
         .order_by(Conversation.updated_at.desc())
     )
-
     conversations = result.scalars().all()
-    response = []
+    if not conversations:
+        return []
 
-    for conversation in conversations:
-        # Fetch every participant and their role.
-        participant_result = await db.execute(
-            select(Profile, ConversationParticipant.role)
-            .join(
-                ConversationParticipant,
-                ConversationParticipant.user_id == Profile.id,
-            )
-            .where(
-                ConversationParticipant.conversation_id == conversation.id
+    conversation_ids = [conversation.id for conversation in conversations]
+
+    # Load participants for every conversation in a single query.
+    participant_result = await db.execute(
+        select(
+            ConversationParticipant.conversation_id,
+            Profile,
+            ConversationParticipant.role,
+        )
+        .join(Profile, ConversationParticipant.user_id == Profile.id)
+        .where(ConversationParticipant.conversation_id.in_(conversation_ids))
+    )
+    participant_rows_by_conversation: dict[uuid.UUID, list[tuple[Profile, str]]] = {}
+    for conversation_id, profile, role in participant_result.all():
+        participant_rows_by_conversation.setdefault(conversation_id, []).append((profile, role))
+
+    # A correlated LIMIT 1 query uses the (conversation_id, created_at, id)
+    # index to seek to the newest message for each conversation. This avoids
+    # scanning/ranking every historical message just to render chat-list previews.
+    latest_message_candidate = aliased(Message)
+    latest_message_id = (
+        select(latest_message_candidate.id)
+        .where(latest_message_candidate.conversation_id == Conversation.id)
+        .order_by(
+            latest_message_candidate.created_at.desc(),
+            latest_message_candidate.id.desc(),
+        )
+        .limit(1)
+        .correlate(Conversation)
+        .scalar_subquery()
+    )
+    latest_message_result = await db.execute(
+        select(Message)
+        .join(Conversation, Conversation.id == Message.conversation_id)
+        .where(
+            Conversation.id.in_(conversation_ids),
+            Message.id == latest_message_id,
+        )
+    )
+    latest_messages = latest_message_result.scalars().all()
+    latest_message_by_conversation = {
+        message.conversation_id: message for message in latest_messages
+    }
+
+    # Load attachments only for the messages actually shown in the chat list.
+    latest_message_ids = [message.id for message in latest_messages]
+    attachments_by_message: dict[uuid.UUID, list[Attachment]] = {}
+    if latest_message_ids:
+        attachment_result = await db.execute(
+            select(Attachment).where(Attachment.message_id.in_(latest_message_ids))
+        )
+        for attachment in attachment_result.scalars().all():
+            attachments_by_message.setdefault(attachment.message_id, []).append(attachment)
+
+    # Resolve relationship state for all direct-chat peers in two batched queries
+    # rather than two queries per direct conversation.
+    peer_ids = {
+        profile.id
+        for conversation in conversations
+        if conversation.type == "direct"
+        for profile, _role in participant_rows_by_conversation.get(conversation.id, [])
+        if profile.id != current_user_id
+    }
+    friend_ids: set[uuid.UUID] = set()
+    pending_requests_by_peer: dict[uuid.UUID, FriendRequest] = {}
+    if peer_ids:
+        friendship_result = await db.execute(
+            select(Friendship.user_low_id, Friendship.user_high_id).where(
+                or_(
+                    and_(
+                        Friendship.user_low_id == current_user_id,
+                        Friendship.user_high_id.in_(peer_ids),
+                    ),
+                    and_(
+                        Friendship.user_high_id == current_user_id,
+                        Friendship.user_low_id.in_(peer_ids),
+                    ),
+                )
             )
         )
+        for low_id, high_id in friendship_result.all():
+            friend_ids.add(high_id if low_id == current_user_id else low_id)
 
-        participant_rows = participant_result.all()
+        request_result = await db.execute(
+            select(FriendRequest).where(
+                FriendRequest.status == "pending",
+                or_(
+                    and_(
+                        FriendRequest.sender_id == current_user_id,
+                        FriendRequest.recipient_id.in_(peer_ids),
+                    ),
+                    and_(
+                        FriendRequest.recipient_id == current_user_id,
+                        FriendRequest.sender_id.in_(peer_ids),
+                    ),
+                ),
+            )
+        )
+        for request in request_result.scalars().all():
+            peer_id = (
+                request.recipient_id
+                if request.sender_id == current_user_id
+                else request.sender_id
+            )
+            pending_requests_by_peer[peer_id] = request
 
+    response = []
+    for conversation in conversations:
+        participant_rows = participant_rows_by_conversation.get(conversation.id, [])
         participants = [
             {
                 "id": str(profile.id),
@@ -300,99 +424,82 @@ async def get_conversations(
             for profile, role in participant_rows
         ]
 
-        # Find the other participant for direct conversations.
         other_participant = next(
-            (
-                profile
-                for profile, _role in participant_rows
-                if profile.id != current_user_id
-            ),
+            (profile for profile, _role in participant_rows if profile.id != current_user_id),
             None,
         )
 
-        # Group conversations use their group name.
         if conversation.type == "group":
             participant_name = conversation.name or "Unnamed Group"
             participant_id = None
             participant_avatar = None
+            relationship = {"relationshipStatus": "group", "friendRequestId": None}
         else:
             participant_name = (
-                other_participant.display_name
-                or other_participant.username
-                or "Unknown"
-            ) if other_participant else "Unknown"
-
-            participant_id = (
-                str(other_participant.id)
-                if other_participant else None
+                (other_participant.display_name or other_participant.username or "Unknown")
+                if other_participant
+                else "Unknown"
             )
+            participant_id = str(other_participant.id) if other_participant else None
+            participant_avatar = other_participant.avatar_url if other_participant else None
 
-            participant_avatar = (
-                other_participant.avatar_url
-                if other_participant else None
-            )
+            if other_participant is None:
+                relationship = {"relationshipStatus": "group", "friendRequestId": None}
+            elif other_participant.id in friend_ids:
+                relationship = {"relationshipStatus": "friends", "friendRequestId": None}
+            elif other_participant.id in pending_requests_by_peer:
+                request = pending_requests_by_peer[other_participant.id]
+                relationship = {
+                    "relationshipStatus": (
+                        "request_sent" if request.sender_id == current_user_id else "request_received"
+                    ),
+                    "friendRequestId": str(request.id),
+                }
+            else:
+                relationship = {"relationshipStatus": "none", "friendRequestId": None}
 
-        # Get the latest message.
-        message_result = await db.execute(
-            select(Message)
-            .where(
-                Message.conversation_id == conversation.id
-            )
-            .order_by(Message.created_at.desc())
-            .limit(1)
+        last_message = latest_message_by_conversation.get(conversation.id)
+        last_message_attachments = (
+            attachments_by_message.get(last_message.id, []) if last_message else []
         )
 
-        last_message = message_result.scalar_one_or_none()
-
-        # Get attachments belonging to the latest message.
-        last_message_attachments = []
-
-        if last_message:
-            attachment_result = await db.execute(
-                select(Attachment)
-                .where(
-                    Attachment.message_id == last_message.id
-                )
-            )
-            last_message_attachments = attachment_result.scalars().all()
-
-        response.append({
-            "id": str(conversation.id),
-            "type": conversation.type,
-            "name": conversation.name,
-
-            "participantId": participant_id,
-            "participantName": participant_name,
-            "participantAvatar": participant_avatar,
-
-            "participants": participants,
-
-            "lastMessage": (
-                {
-                    "id": str(last_message.id),
-                    "conversationId": str(last_message.conversation_id),
-                    "senderId": str(last_message.sender_id),
-                    "content": last_message.content,
-                    "createdAt": last_message.created_at,
-                    "status": last_message.status,
-                    "attachments": [
-                        {
-                            "id": str(attachment.id),
-                            "fileName": attachment.file_name,
-                            "mimeType": attachment.mime_type,
-                            "size": attachment.file_size,
-                        }
-                        for attachment in last_message_attachments
-                    ],
-                }
-                if last_message else None
-            ),
-
-            "unreadCount": 0,
-
-            "createdAt": conversation.created_at,
-            "updatedAt": conversation.updated_at,
-        })
+        response.append(
+            {
+                "id": str(conversation.id),
+                "type": conversation.type,
+                "name": conversation.name,
+                "participantId": participant_id,
+                "participantName": participant_name,
+                "participantAvatar": participant_avatar,
+                "relationshipStatus": relationship["relationshipStatus"],
+                "friendRequestId": relationship["friendRequestId"],
+                "participants": participants,
+                "lastMessage": (
+                    {
+                        "id": str(last_message.id),
+                        "conversationId": str(last_message.conversation_id),
+                        "senderId": str(last_message.sender_id),
+                        "content": last_message.content,
+                        "createdAt": last_message.created_at,
+                        "status": last_message.status,
+                        "attachments": [
+                            {
+                                "id": str(attachment.id),
+                                "fileName": attachment.file_name,
+                                "mimeType": attachment.mime_type,
+                                "size": attachment.file_size,
+                            }
+                            for attachment in last_message_attachments
+                        ],
+                    }
+                    if last_message
+                    else None
+                ),
+                "unreadCount": 0,
+                "createdAt": conversation.created_at,
+                "updatedAt": conversation.updated_at,
+            }
+        )
 
     return response
 
@@ -486,6 +593,12 @@ async def get_conversation(
             else None
         )
 
+    relationship = (
+        await get_relationship_state(db, current_user_id, other_participant.id)
+        if conversation.type == "direct" and other_participant
+        else {"relationshipStatus": "group", "friendRequestId": None}
+    )
+
     return {
         "id": str(conversation.id),
         "type": conversation.type,
@@ -493,6 +606,8 @@ async def get_conversation(
         "participantId": participant_id,
         "participantName": participant_name,
         "participantAvatar": participant_avatar,
+        "relationshipStatus": relationship["relationshipStatus"],
+        "friendRequestId": relationship["friendRequestId"],
         "participants": participants,
         "createdAt": conversation.created_at,
         "updatedAt": conversation.updated_at,

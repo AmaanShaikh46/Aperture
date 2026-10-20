@@ -5,6 +5,7 @@
 import { USE_MOCK_API } from '../config.js';
 import { get, patch, post } from './api-client.js';
 import { mockCurrentUser, mockUsers } from '../mock/mock-data.js';
+import { getMockRelationshipState } from './friend-service.js';
 
 function normalizeProfile(payload) {
   const profile = payload?.profile ?? payload;
@@ -75,11 +76,13 @@ export async function uploadProfileAvatar(file) {
 export async function searchUsers(query) {
   if (USE_MOCK_API) {
     const q = (query || '').trim().toLowerCase();
-    return mockUsers.filter((user) =>
-      [user.displayName, user.username, user.email]
-        .filter(Boolean)
-        .some((value) => value.toLowerCase().includes(q)),
-    );
+    return mockUsers
+      .filter((user) =>
+        [user.displayName, user.username, user.email]
+          .filter(Boolean)
+          .some((value) => value.toLowerCase().includes(q)),
+      )
+      .map((user) => ({ ...user, ...getMockRelationshipState(user.id) }));
   }
 
   const results = await get('/api/v1/users/search', {
@@ -91,6 +94,8 @@ export async function searchUsers(query) {
     username: user.username ?? '',
     displayName: user.displayName ?? user.display_name ?? user.username ?? 'Unknown',
     avatarUrl: user.avatarUrl ?? user.avatar_url ?? '',
+    relationshipStatus: user.relationshipStatus ?? user.relationship_status ?? 'none',
+    friendRequestId: user.friendRequestId ?? user.friend_request_id ?? null,
   }));
 }
 

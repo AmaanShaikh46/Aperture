@@ -70,3 +70,5 @@ class UserSearchResult(BaseModel):
     username: str | None
     display_name: str | None = Field(alias="displayName")
     avatar_url: str | None = Field(alias="avatarUrl")
+    relationship_status: str = Field(default="none", alias="relationshipStatus")
+    friend_request_id: str | None = Field(default=None, alias="friendRequestId")

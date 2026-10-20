@@ -1,174 +1,291 @@
 /**
- * APERTURE - Contacts Page Module
- * Search users, list contacts, add/remove contacts, open chat, call contact.
+ * APERTURE - Friends page
+ * Friend requests must be accepted before a direct message or call is allowed.
  */
 import { searchUsers } from '../services/user-service.js';
-import { getContacts, addContact, removeContact } from '../services/contact-service.js';
 import { createConversation } from '../services/conversation-service.js';
+import {
+  getFriends,
+  getFriendRequests,
+  sendFriendRequest,
+  acceptFriendRequest,
+  rejectFriendRequest,
+  cancelFriendRequest,
+  removeFriend,
+} from '../services/friend-service.js';
 import { escapeHtml, getInitials, avatarColor, debounce } from '../utils.js';
 
-let contacts = [];
+let friends = [];
+let incomingRequests = [];
+let outgoingRequests = [];
+let currentQuery = '';
 
-/** Initialize the contacts page. */
 export async function initContactsPage(container) {
   renderShell(container);
-  await loadContacts();
+  await loadRelationships();
   setupSearch();
 }
 
-/** Render the page shell. */
 function renderShell(container) {
   container.innerHTML = `
     <div class="contacts-page">
       <div class="contacts-header">
-        <h2 class="h5 mb-3">Contacts</h2>
+        <h2 class="h5 mb-3">Friends</h2>
         <div class="input-group mb-3">
           <span class="input-group-text"><i class="bi bi-search" aria-hidden="true"></i></span>
-          <input type="text" id="contact-search" class="form-control" placeholder="Search users..." aria-label="Search users" autocomplete="off" />
+          <input type="text" id="contact-search" class="form-control" placeholder="Search people by name or username" aria-label="Search users" autocomplete="off" />
         </div>
       </div>
       <div id="search-results" class="search-results"></div>
-      <div id="contacts-list" class="contacts-list"></div>
+      <section class="mb-4">
+        <h3 class="h6 mb-2">Incoming friend requests <span class="text-muted" id="incoming-count"></span></h3>
+        <div id="incoming-requests-list"></div>
+      </section>
+      <section class="mb-4">
+        <h3 class="h6 mb-2">Sent requests <span class="text-muted" id="outgoing-count"></span></h3>
+        <div id="outgoing-requests-list"></div>
+      </section>
+      <section>
+        <h3 class="h6 mb-2">Your friends <span class="text-muted" id="friends-count"></span></h3>
+        <div id="contacts-list" class="contacts-list"></div>
+      </section>
     </div>`;
 }
 
-/** Load and render contacts. */
-async function loadContacts() {
-  const listEl = document.getElementById('contacts-list');
-  listEl.innerHTML = `<div class="loading-state"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div></div>`;
+async function loadRelationships() {
+  const friendsEl = document.getElementById('contacts-list');
+  if (friendsEl) friendsEl.innerHTML = '<div class="small text-muted py-2">Loading friends...</div>';
   try {
-    contacts = await getContacts();
-    renderContacts();
-  } catch (e) {
-    listEl.innerHTML = `<div class="error-state"><i class="bi bi-exclamation-triangle"></i><p>Could not load contacts.</p><button class="btn btn-sm btn-outline-primary" onclick="window.__apertureContactsReload()">Retry</button></div>`;
-    window.__apertureContactsReload = () => loadContacts();
+    const [friendList, requestLists] = await Promise.all([getFriends(), getFriendRequests()]);
+    friends = Array.isArray(friendList) ? friendList : [];
+    incomingRequests = Array.isArray(requestLists?.incoming) ? requestLists.incoming : [];
+    outgoingRequests = Array.isArray(requestLists?.outgoing) ? requestLists.outgoing : [];
+    renderRequests();
+    renderFriends();
+    if (currentQuery) await renderSearchResults(currentQuery);
+  } catch (error) {
+    console.error('[friends] Could not load relationships:', error);
+    if (friendsEl) {
+      friendsEl.innerHTML = `
+        <div class="error-state">
+          <p>Could not load friends and requests.</p>
+          <button type="button" class="btn btn-sm btn-outline-primary" id="friends-retry-btn">Retry</button>
+        </div>`;
+      document.getElementById('friends-retry-btn')?.addEventListener('click', loadRelationships);
+    }
   }
 }
 
-/** Render the contacts list. */
-function renderContacts() {
+function renderRequestCard(user, type) {
+  const displayName = user.displayName || user.username || 'Unknown';
+  const initials = getInitials(displayName);
+  const color = avatarColor(displayName);
+  const requestId = String(user.id || '');
+  return `
+    <div class="contact-card" data-request-id="${escapeHtml(requestId)}">
+      <div class="avatar" style="background-color:${color}">${escapeHtml(initials)}</div>
+      <div class="contact-info">
+        <div class="contact-name">${escapeHtml(displayName)}</div>
+        <div class="contact-username">@${escapeHtml(user.username || '')}</div>
+      </div>
+      <div class="contact-actions">
+        ${type === 'incoming' ? `
+          <button type="button" class="btn btn-sm btn-primary request-accept-btn" data-request-id="${escapeHtml(requestId)}">Accept</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary request-reject-btn" data-request-id="${escapeHtml(requestId)}">Reject</button>
+        ` : `
+          <span class="small text-muted me-2">Pending</span>
+          <button type="button" class="btn btn-sm btn-outline-secondary request-cancel-btn" data-request-id="${escapeHtml(requestId)}">Cancel</button>
+        `}
+      </div>
+    </div>`;
+}
+
+function renderRequests() {
+  const incomingEl = document.getElementById('incoming-requests-list');
+  const outgoingEl = document.getElementById('outgoing-requests-list');
+  if (!incomingEl || !outgoingEl) return;
+
+  document.getElementById('incoming-count').textContent = `(${incomingRequests.length})`;
+  document.getElementById('outgoing-count').textContent = `(${outgoingRequests.length})`;
+
+  incomingEl.innerHTML = incomingRequests.length
+    ? incomingRequests.map((user) => renderRequestCard(user, 'incoming')).join('')
+    : '<div class="small text-muted py-2">No new friend requests.</div>';
+  outgoingEl.innerHTML = outgoingRequests.length
+    ? outgoingRequests.map((user) => renderRequestCard(user, 'outgoing')).join('')
+    : '<div class="small text-muted py-2">No pending sent requests.</div>';
+
+  incomingEl.querySelectorAll('.request-accept-btn').forEach((button) => {
+    button.addEventListener('click', () => runRequestAction(button, async () => {
+      await acceptFriendRequest(button.dataset.requestId);
+      await loadRelationships();
+    }));
+  });
+  incomingEl.querySelectorAll('.request-reject-btn').forEach((button) => {
+    button.addEventListener('click', () => runRequestAction(button, async () => {
+      await rejectFriendRequest(button.dataset.requestId);
+      await loadRelationships();
+    }));
+  });
+  outgoingEl.querySelectorAll('.request-cancel-btn').forEach((button) => {
+    button.addEventListener('click', () => runRequestAction(button, async () => {
+      await cancelFriendRequest(button.dataset.requestId);
+      await loadRelationships();
+    }));
+  });
+}
+
+async function runRequestAction(button, operation) {
+  button.disabled = true;
+  try {
+    await operation();
+  } catch (error) {
+    console.error('[friends] Request action failed:', error);
+    window.alert(error.message || 'Could not update the friend request. Please try again.');
+    button.disabled = false;
+  }
+}
+
+function renderFriends() {
   const listEl = document.getElementById('contacts-list');
-  if (!contacts || contacts.length === 0) {
-    listEl.innerHTML = `<div class="empty-state"><i class="bi bi-people"></i><p>No contacts yet. Search above to add someone.</p></div>`;
+  if (!listEl) return;
+  document.getElementById('friends-count').textContent = `(${friends.length})`;
+  if (!friends.length) {
+    listEl.innerHTML = '<div class="empty-state"><i class="bi bi-people"></i><p>No friends yet. Search above to send a friend request.</p></div>';
     return;
   }
-  listEl.innerHTML = contacts
-    .map((contact) => {
-      const initials = getInitials(contact.displayName);
-      const color = avatarColor(contact.displayName);
-      return `
-        <div class="contact-card" data-user-id="${contact.id}">
-          <div class="avatar" style="background-color:${color}">${initials}</div>
-          <div class="contact-info">
-            <div class="contact-name">${escapeHtml(contact.displayName)}</div>
-            <div class="contact-username">@${escapeHtml(contact.username || '')}</div>
-          </div>
-          <div class="contact-actions">
-            <button class="btn btn-sm btn-outline-primary contact-chat-btn" data-user-id="${contact.id}" aria-label="Chat with ${escapeHtml(contact.displayName)}"><i class="bi bi-chat-dots"></i></button>
-            <button class="btn btn-sm btn-outline-success contact-call-btn" data-user-id="${contact.id}" aria-label="Audio call ${escapeHtml(contact.displayName)}"><i class="bi bi-telephone"></i></button>
-            <button class="btn btn-sm btn-outline-primary contact-video-call-btn" data-user-id="${contact.id}" aria-label="Video call ${escapeHtml(contact.displayName)}"><i class="bi bi-camera-video"></i></button>
-            <button class="btn btn-sm btn-outline-danger contact-remove-btn" data-user-id="${contact.id}" aria-label="Remove ${escapeHtml(contact.displayName)}"><i class="bi bi-person-dash"></i></button>
-          </div>
-        </div>`;
-    })
-    .join('');
 
-  listEl.querySelectorAll('.contact-chat-btn').forEach((btn) => {
-    btn.addEventListener('click', () => openChat(btn.dataset.userId));
+  listEl.innerHTML = friends.map((friend) => {
+    const name = friend.displayName || friend.username || 'Unknown';
+    return `
+      <div class="contact-card" data-user-id="${escapeHtml(friend.id)}">
+        <div class="avatar" style="background-color:${avatarColor(name)}">${escapeHtml(getInitials(name))}</div>
+        <div class="contact-info">
+          <div class="contact-name">${escapeHtml(name)}</div>
+          <div class="contact-username">@${escapeHtml(friend.username || '')}</div>
+        </div>
+        <div class="contact-actions">
+          <button type="button" class="btn btn-sm btn-outline-primary friend-chat-btn" data-user-id="${escapeHtml(friend.id)}" aria-label="Chat with ${escapeHtml(name)}"><i class="bi bi-chat-dots"></i></button>
+          <button type="button" class="btn btn-sm btn-outline-success friend-call-btn" data-user-id="${escapeHtml(friend.id)}" aria-label="Audio call ${escapeHtml(name)}"><i class="bi bi-telephone"></i></button>
+          <button type="button" class="btn btn-sm btn-outline-primary friend-video-call-btn" data-user-id="${escapeHtml(friend.id)}" aria-label="Video call ${escapeHtml(name)}"><i class="bi bi-camera-video"></i></button>
+          <button type="button" class="btn btn-sm btn-outline-danger friend-remove-btn" data-user-id="${escapeHtml(friend.id)}" aria-label="Remove ${escapeHtml(name)}"><i class="bi bi-person-dash"></i></button>
+        </div>
+      </div>`;
+  }).join('');
+
+  listEl.querySelectorAll('.friend-chat-btn').forEach((button) => {
+    button.addEventListener('click', () => openChat(button.dataset.userId));
   });
-  listEl.querySelectorAll('.contact-call-btn').forEach((btn) => {
-    btn.addEventListener('click', () => callContact(btn.dataset.userId, 'audio'));
+  listEl.querySelectorAll('.friend-call-btn').forEach((button) => {
+    button.addEventListener('click', () => callFriend(button.dataset.userId, 'audio'));
   });
-  listEl.querySelectorAll('.contact-video-call-btn').forEach((btn) => {
-    btn.addEventListener('click', () => callContact(btn.dataset.userId, 'video'));
+  listEl.querySelectorAll('.friend-video-call-btn').forEach((button) => {
+    button.addEventListener('click', () => callFriend(button.dataset.userId, 'video'));
   });
-  listEl.querySelectorAll('.contact-remove-btn').forEach((btn) => {
-    btn.addEventListener('click', () => removeContactHandler(btn.dataset.userId));
+  listEl.querySelectorAll('.friend-remove-btn').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const friend = friends.find((item) => String(item.id) === String(button.dataset.userId));
+      const name = friend?.displayName || friend?.username || 'this friend';
+      const confirmed = window.confirm(`Remove ${name} as a friend? Existing messages will remain, new messages and calls will be blocked, and any active call will end.`);
+      if (!confirmed) return;
+      await runRequestAction(button, async () => {
+        await removeFriend(button.dataset.userId);
+        await loadRelationships();
+      });
+    });
   });
 }
 
-/** Setup search functionality. */
 function setupSearch() {
   const input = document.getElementById('contact-search');
+  if (!input) return;
+  const handler = debounce((value) => renderSearchResults(value), 300);
+  input.addEventListener('input', (event) => {
+    currentQuery = event.target.value.trim();
+    handler(currentQuery);
+  });
+}
+
+async function renderSearchResults(query) {
   const resultsEl = document.getElementById('search-results');
-  const debouncedSearch = debounce(async (query) => {
-    if (!query.trim()) {
-      resultsEl.innerHTML = '';
+  if (!resultsEl) return;
+  if (!query.trim()) {
+    resultsEl.innerHTML = '';
+    return;
+  }
+  resultsEl.innerHTML = '<div class="small text-muted py-2">Searching...</div>';
+  try {
+    const users = await searchUsers(query);
+    if (!users.length) {
+      resultsEl.innerHTML = '<div class="search-empty"><p class="text-muted small mb-0">No users found.</p></div>';
       return;
     }
-    try {
-      const users = await searchUsers(query);
-      if (!users || users.length === 0) {
-        resultsEl.innerHTML = `<div class="search-empty"><p class="text-muted small mb-0">No users found.</p></div>`;
-        return;
+    resultsEl.innerHTML = users.map((user) => {
+      const name = user.displayName || user.username || 'Unknown';
+      const relationship = user.relationshipStatus || 'none';
+      let action = '';
+      if (relationship === 'friends') {
+        action = '<button type="button" class="btn btn-sm btn-outline-secondary" disabled><i class="bi bi-check2"></i> Friends</button>';
+      } else if (relationship === 'request_sent') {
+        action = '<button type="button" class="btn btn-sm btn-outline-secondary" disabled>Request Sent</button>';
+      } else if (relationship === 'request_received') {
+        action = `
+          <button type="button" class="btn btn-sm btn-primary search-accept-btn" data-request-id="${escapeHtml(user.friendRequestId || '')}">Accept</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary search-reject-btn" data-request-id="${escapeHtml(user.friendRequestId || '')}">Reject</button>`;
+      } else {
+        action = `<button type="button" class="btn btn-sm btn-primary search-add-btn" data-user-id="${escapeHtml(user.id)}"><i class="bi bi-person-plus"></i> Add Friend</button>`;
       }
-      resultsEl.innerHTML = users
-        .map((user) => {
-          const initials = getInitials(user.displayName);
-          const color = avatarColor(user.displayName);
-          const isContact = contacts.find((c) => c.id === user.id);
-          return `
-            <div class="search-result-item" data-user-id="${user.id}">
-              <div class="avatar avatar-sm" style="background-color:${color}">${initials}</div>
-              <div class="search-result-info">
-                <div class="search-result-name">${escapeHtml(user.displayName)}</div>
-                <div class="search-result-username">@${escapeHtml(user.username || '')}</div>
-              </div>
-              <button class="btn btn-sm ${isContact ? 'btn-outline-secondary' : 'btn-primary'} add-contact-btn" data-user-id="${user.id}" ${isContact ? 'disabled' : ''}>
-                ${isContact ? '<i class="bi bi-check2"></i> Added' : '<i class="bi bi-person-plus"></i> Add'}
-              </button>
-            </div>`;
-        })
-        .join('');
-      resultsEl.querySelectorAll('.add-contact-btn').forEach((btn) => {
-        btn.addEventListener('click', () => addContactHandler(btn.dataset.userId));
-      });
-    } catch (e) {
-      resultsEl.innerHTML = `<div class="search-empty"><p class="text-danger small mb-0">Search failed.</p></div>`;
-    }
-  }, 300);
-  input.addEventListener('input', (e) => debouncedSearch(e.target.value));
-}
+      return `
+        <div class="search-result-item" data-user-id="${escapeHtml(user.id)}">
+          <div class="avatar avatar-sm" style="background-color:${avatarColor(name)}">${escapeHtml(getInitials(name))}</div>
+          <div class="search-result-info">
+            <div class="search-result-name">${escapeHtml(name)}</div>
+            <div class="search-result-username">@${escapeHtml(user.username || '')}</div>
+          </div>
+          <div class="contact-actions">${action}</div>
+        </div>`;
+    }).join('');
 
-/** Add a contact. */
-async function addContactHandler(userId) {
-  try {
-    await addContact(userId);
-    await loadContacts();
-    document.getElementById('contact-search').value = '';
-    document.getElementById('search-results').innerHTML = '';
-  } catch (e) {
-    console.error('Failed to add contact:', e);
+    resultsEl.querySelectorAll('.search-add-btn').forEach((button) => {
+      button.addEventListener('click', () => runRequestAction(button, async () => {
+        await sendFriendRequest(button.dataset.userId);
+        await loadRelationships();
+      }));
+    });
+    resultsEl.querySelectorAll('.search-accept-btn').forEach((button) => {
+      button.addEventListener('click', () => runRequestAction(button, async () => {
+        await acceptFriendRequest(button.dataset.requestId);
+        await loadRelationships();
+      }));
+    });
+    resultsEl.querySelectorAll('.search-reject-btn').forEach((button) => {
+      button.addEventListener('click', () => runRequestAction(button, async () => {
+        await rejectFriendRequest(button.dataset.requestId);
+        await loadRelationships();
+      }));
+    });
+  } catch (error) {
+    console.error('[friends] User search failed:', error);
+    resultsEl.innerHTML = '<div class="search-empty"><p class="text-danger small mb-0">Search failed. Please try again.</p></div>';
   }
 }
 
-/** Remove a contact. */
-async function removeContactHandler(userId) {
-  try {
-    await removeContact(userId);
-    contacts = contacts.filter((c) => c.id !== userId);
-    renderContacts();
-  } catch (e) {
-    console.error('Failed to remove contact:', e);
-  }
-}
-
-/** Open a chat with a user. */
 async function openChat(userId) {
   try {
-    const conv = await createConversation(userId);
-    window.location.href = `app.html?conversation=${conv.id}`;
-  } catch (e) {
-    console.error('Failed to create conversation:', e);
+    const conversation = await createConversation(userId);
+    window.location.href = `app.html?conversation=${encodeURIComponent(conversation.id)}`;
+  } catch (error) {
+    console.error('[friends] Could not open chat:', error);
+    window.alert(error.message || 'Could not open this conversation.');
   }
 }
 
-/** Call a contact. */
-async function callContact(userId, callType = 'audio') {
+function callFriend(userId, callType) {
   window.location.href = `calls.html?action=call&user=${encodeURIComponent(userId)}&type=${encodeURIComponent(callType)}`;
 }
 
-/** Clean up. */
-export function destroyContactsPage() {}
+export function destroyContactsPage() {
+  currentQuery = '';
+}
 
 export default { initContactsPage, destroyContactsPage };

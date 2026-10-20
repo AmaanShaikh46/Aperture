@@ -6,6 +6,7 @@ import { USE_MOCK_API, ICE_SERVERS } from '../config.js';
 import { get, post } from './api-client.js';
 import { mockCalls } from '../mock/mock-data.js';
 import { uuid } from '../utils.js';
+import { getMockRelationshipState } from './friend-service.js';
 
 // Metered TURN configuration.
 const METERED_CREDENTIALS_URL =
@@ -33,6 +34,9 @@ export async function getCall(callId) {
 /** Initiate a new call to a user. */
 export async function createCall(userId, callType = 'audio') {
   if (USE_MOCK_API) {
+    if (getMockRelationshipState(userId).relationshipStatus !== 'friends') {
+      throw new Error('You can only call a friend. Send a friend request first.');
+    }
     const call = {
       id: `call-${uuid().slice(0, 8)}`,
       callerId: '00000000-0000-0000-0000-000000000001',

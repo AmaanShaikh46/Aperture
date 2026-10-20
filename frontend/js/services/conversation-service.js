@@ -9,10 +9,14 @@ import {
   mockCurrentUser,
 } from '../mock/mock-data.js';
 import { uuid } from '../utils.js';
+import { getMockRelationshipState } from './friend-service.js';
 
 /** Create or retrieve a direct conversation with a user. */
 export async function createConversation(userId) {
   if (USE_MOCK_API) {
+    if (getMockRelationshipState(userId).relationshipStatus !== 'friends') {
+      throw new Error('You can only start a direct conversation with a friend. Send a friend request first.');
+    }
     let conv = mockConversations.find(
       (c) => c.type === 'direct' && c.participantId === userId
     );
@@ -26,6 +30,8 @@ export async function createConversation(userId) {
         participantId: userId,
         participantName: user ? user.displayName : 'Unknown',
         participantAvatar: user?.avatarUrl || '',
+        relationshipStatus: 'friends',
+        friendRequestId: null,
         participants: [],
         lastMessage: null,
         unreadCount: 0,
@@ -36,7 +42,7 @@ export async function createConversation(userId) {
       mockConversations.unshift(conv);
     }
 
-    return { ...conv };
+    return { ...conv, relationshipStatus: 'friends', friendRequestId: null };
   }
 
   return post('/api/conversations', { userId });
@@ -122,7 +128,12 @@ export async function createGroupConversation(name, participantIds) {
 /** List all conversations for the current user. */
 export async function getConversations() {
   if (USE_MOCK_API) {
-    return mockConversations.map((conversation) => ({ ...conversation }));
+    return mockConversations.map((conversation) => {
+      if (conversation.type !== 'group' && conversation.participantId) {
+        return { ...conversation, ...getMockRelationshipState(conversation.participantId) };
+      }
+      return { ...conversation, relationshipStatus: 'group', friendRequestId: null };
+    });
   }
 
   return get('/api/conversations');

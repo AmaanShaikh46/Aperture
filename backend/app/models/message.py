@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Text, false
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Text, false
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.database import Base
@@ -9,6 +9,9 @@ from app.database.database import Base
 
 class Message(Base):
     __tablename__ = "messages"
+    __table_args__ = (
+        Index("ix_messages_conversation_created_at", "conversation_id", "created_at", "id"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True,

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import uuid
@@ -11,6 +12,7 @@ from app.core.security import verify_access_token
 from app.database.database import AsyncSessionLocal
 from app.models.conversation_participants import ConversationParticipant
 from app.models.call_session import CallSession
+from app.services.friendship_service import require_friends
 from app.services.connection_manager import manager
 from app.services.message_service import create_message
 
@@ -149,8 +151,70 @@ async def _handle_call_signal(
 
     try:
         async with AsyncSessionLocal() as db:
+            # Take the relationship lock before the call-row lock, matching
+            # remove_friend and accept_call. This closes the race where stale
+            # WebRTC offers/ICE candidates could be relayed during removal.
             result = await db.execute(select(CallSession).where(CallSession.id == call_id))
             call = result.scalar_one_or_none()
+            if call is None or user_id not in {str(call.caller_id), str(call.callee_id)}:
+                await _send_call_error(websocket, "Call not found.")
+                return
+            if call.status != "accepted":
+                await _send_call_error(websocket, "Call is not active for signaling.")
+                return
+
+            caller_id = call.caller_id
+            callee_id = call.callee_id
+            try:
+                await require_friends(db, caller_id, callee_id)
+            except HTTPException as exc:
+                if exc.status_code != 403:
+                    raise
+                # The friendship has gone. Only now lock/update the call row;
+                # doing this after the friendship check avoids lock inversion.
+                locked_result = await db.execute(
+                    select(CallSession).where(CallSession.id == call_id).with_for_update()
+                )
+                locked_call = locked_result.scalar_one_or_none()
+                ended_payload = None
+                other_user_id = None
+                if locked_call is not None and locked_call.status in {"ringing", "accepted"}:
+                    locked_call.status = "completed"
+                    locked_call.ended_at = datetime.now(timezone.utc)
+                    locked_call.ended_by = uuid.UUID(user_id)
+                    other_user_id = str(
+                        locked_call.callee_id
+                        if user_id == str(locked_call.caller_id)
+                        else locked_call.caller_id
+                    )
+                    ended_payload = {
+                        "callId": str(locked_call.id),
+                        "status": locked_call.status,
+                        "endedBy": user_id,
+                        "reason": "friendship_required",
+                    }
+                    await db.commit()
+                await _send_call_error(
+                    websocket,
+                    "Call ended because you are no longer friends.",
+                )
+                if ended_payload is not None and other_user_id is not None:
+                    event = {"type": "call.ended", "payload": ended_payload}
+                    for target_user_id in {user_id, other_user_id}:
+                        try:
+                            await manager.send_to_user(target_user_id, event)
+                        except Exception:
+                            logger.exception(
+                                "Could not notify participant that an unauthorized call ended"
+                            )
+                return
+
+            # The relationship row is now locked; serialize signaling against
+            # the call's terminal-state transitions as well.
+            locked_result = await db.execute(
+                select(CallSession).where(CallSession.id == call_id).with_for_update()
+            )
+            call = locked_result.scalar_one_or_none()
             if call is None or user_id not in {str(call.caller_id), str(call.callee_id)}:
                 await _send_call_error(websocket, "Call not found.")
                 return
@@ -172,19 +236,25 @@ async def _handle_call_signal(
                 "fromUserId": user_id,
                 **relay_value,
             }
+            # Keep the friendship and call-row locks until relay completes. If
+            # remove_friend wins the relationship lock, this handler observes
+            # the removal and refuses to relay; if this handler wins, the signal
+            # is delivered before remove_friend can announce call termination.
+            try:
+                await asyncio.wait_for(
+                    manager.send_to_user(
+                        recipient_id,
+                        {"type": event_type, "payload": relay_payload},
+                    ),
+                    timeout=2.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Call signaling delivery timed out for call %s", call_id)
+                await _send_call_error(websocket, "Call signaling delivery timed out.")
+                return
     except Exception:
-        logger.exception("Call signaling lookup failed")
+        logger.exception("Call signaling lookup or relay failed")
         await _send_call_error(websocket, "Could not process call signaling right now.")
-        return
-
-    try:
-        await manager.send_to_user(
-            recipient_id,
-            {"type": event_type, "payload": relay_payload},
-        )
-    except Exception:
-        logger.exception("Call signaling relay failed for call %s", call_id)
-        await _send_call_error(websocket, "Could not deliver call signaling.")
 
 
 @router.websocket("/ws")

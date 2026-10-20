@@ -12,6 +12,7 @@ from app.database.database import get_db
 from app.models.call_session import CallSession
 from app.models.profiles import Profile
 from app.services.connection_manager import manager
+from app.services.friendship_service import require_friends
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -161,6 +162,9 @@ async def create_call(
     if callee_profile is None:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # Calls follow the same mutual-friend policy as direct messages.
+    await require_friends(db, caller_id, callee_id)
+
     in_progress = await db.execute(
         select(CallSession.id).where(
             or_(
@@ -188,20 +192,53 @@ async def create_call(
         logger.exception("Failed to create call session")
         raise HTTPException(status_code=500, detail="Could not start the call")
 
-    response = _serialize_call(call, caller_id, caller_profile, callee_profile)
+    # A friend may be removed immediately after the call row is committed.
+    # Reacquire the friendship lock, then the call-row lock, before notifying the
+    # recipient. Sending while those locks are held guarantees the incoming
+    # event cannot be delivered after a concurrent remove-friend event.
+    try:
+        await require_friends(db, caller_id, callee_id)
+    except HTTPException as exc:
+        if exc.status_code != 403:
+            raise
+        latest_result = await db.execute(
+            select(CallSession).where(CallSession.id == call.id).with_for_update()
+        )
+        latest_call = latest_result.scalar_one_or_none()
+        if latest_call is not None and latest_call.status == "ringing":
+            latest_call.status = "cancelled"
+            latest_call.ended_at = datetime.now(timezone.utc)
+            latest_call.ended_by = caller_id
+            await db.commit()
+        else:
+            await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Friendship ended before the call could be delivered.",
+        ) from exc
+
+    latest_result = await db.execute(
+        select(CallSession).where(CallSession.id == call.id).with_for_update()
+    )
+    latest_call = latest_result.scalar_one_or_none()
+    if latest_call is None or latest_call.status != "ringing":
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="This call is no longer active.")
+
     await _notify(
         callee_id,
         "call.incoming",
         {
-            "callId": str(call.id),
+            "callId": str(latest_call.id),
             "callerId": str(caller_id),
             "displayName": _name(caller_profile),
             "avatarUrl": caller_profile.avatar_url,
-            "callType": call.call_type,
-            "startedAt": call.created_at.isoformat(),
+            "callType": latest_call.call_type,
+            "startedAt": latest_call.created_at.isoformat(),
         },
     )
-    return response
+    await db.commit()
+    return _serialize_call(latest_call, caller_id, caller_profile, callee_profile)
 
 
 @router.post("/calls/{call_id}/accept")
@@ -211,6 +248,38 @@ async def accept_call(
     db: AsyncSession = Depends(get_db),
 ):
     current_user_id = uuid.UUID(current_user["id"])
+    # Read without locking first so we can lock resources in a consistent
+    # order: friendship row, then call row. The final locked read below
+    # revalidates call ownership and status against concurrent accept/reject/end.
+    call = await _get_call_for_user(db, call_id, current_user_id)
+    if current_user_id != call.callee_id:
+        raise HTTPException(status_code=403, detail="Only the recipient can accept a call")
+    if call.status != "ringing":
+        raise HTTPException(status_code=409, detail="This call is no longer ringing")
+
+    try:
+        await require_friends(db, call.caller_id, call.callee_id)
+    except HTTPException as exc:
+        if exc.status_code != 403:
+            raise
+        # No friendship exists. Lock the call only after the friendship check
+        # so this path cannot deadlock against remove_friend (friendship -> call).
+        call = await _get_call_for_user(db, call_id, current_user_id, lock=True)
+        if call.status == "ringing":
+            call.status = "rejected"
+            call.ended_at = datetime.now(timezone.utc)
+            call.ended_by = current_user_id
+            await db.commit()
+            await _notify(
+                call.caller_id,
+                "call.rejected",
+                {"callId": str(call.id), "reason": "friendship_required"},
+            )
+            raise
+        raise HTTPException(status_code=409, detail="This call is no longer ringing") from exc
+
+    # Friendship is locked for the rest of this transaction. A concurrent
+    # removal waits until acceptance commits, then ends the accepted call.
     call = await _get_call_for_user(db, call_id, current_user_id, lock=True)
     if current_user_id != call.callee_id:
         raise HTTPException(status_code=403, detail="Only the recipient can accept a call")

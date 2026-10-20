@@ -10,6 +10,7 @@ from app.models.message_receipt import MessageReceipt
 
 from datetime import datetime, timezone
 from app.models.conversations import Conversation
+from app.services.friendship_service import require_direct_conversation_friendship
 
 async def create_message(
     db: AsyncSession,
@@ -74,6 +75,10 @@ async def create_message(
             status_code=404,
             detail="Conversation not found",
         )
+
+    # Enforce the relationship policy here so both HTTP and WebSocket message
+    # paths receive the same server-side authorization check.
+    await require_direct_conversation_friendship(db, conversation_id, sender_id)
 
     try:
         message = Message(

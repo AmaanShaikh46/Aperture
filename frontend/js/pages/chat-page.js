@@ -37,6 +37,7 @@ import {
   debounce
 } from '../utils.js';
 import { searchUsers } from '../services/user-service.js';
+import { sendFriendRequest, acceptFriendRequest, rejectFriendRequest } from '../services/friend-service.js';
 import { startOutgoingCall } from '../webrtc/call-controller.js';
 
 
@@ -806,41 +807,99 @@ function openNewChatSearch() {
           return;
         }
 
-        resultsEl.innerHTML = users
-          .map((user) => `
-            <button
-              class="w-100 border-0 bg-transparent text-start p-2 d-flex align-items-center new-chat-user"
-              data-user-id="${user.id}"
-            >
-              <div
-                class="avatar avatar-sm me-2"
-                style="background-color:${avatarColor(user.displayName)}"
-              >
-                ${getInitials(user.displayName)}
-              </div>
+        const renderSearchUsers = (searchResults) => {
+          resultsEl.innerHTML = searchResults
+            .map((user) => {
+              const name = user.displayName || user.username || 'Unknown';
+              const relationship = user.relationshipStatus || 'none';
+              let action = '';
+              if (relationship === 'friends') {
+                action = `<button type="button" class="btn btn-sm btn-primary new-chat-open" data-user-id="${escapeHtml(user.id)}">Open Chat</button>`;
+              } else if (relationship === 'request_sent') {
+                action = '<button type="button" class="btn btn-sm btn-outline-secondary" disabled>Request Sent</button>';
+              } else if (relationship === 'request_received') {
+                action = `
+                  <button type="button" class="btn btn-sm btn-primary new-chat-accept" data-request-id="${escapeHtml(user.friendRequestId || '')}">Accept</button>
+                  <button type="button" class="btn btn-sm btn-outline-secondary new-chat-reject" data-request-id="${escapeHtml(user.friendRequestId || '')}">Reject</button>`;
+              } else {
+                action = `<button type="button" class="btn btn-sm btn-primary new-chat-add" data-user-id="${escapeHtml(user.id)}"><i class="bi bi-person-plus"></i> Add Friend</button>`;
+              }
+              return `
+                <div class="w-100 p-2 d-flex align-items-center gap-2 new-chat-user border-bottom">
+                  <div class="avatar avatar-sm" style="background-color:${avatarColor(name)}">
+                    ${escapeHtml(getInitials(name))}
+                  </div>
+                  <div class="flex-grow-1 min-w-0">
+                    <div class="fw-semibold">${escapeHtml(name)}</div>
+                    <div class="text-muted small">@${escapeHtml(user.username || '')}</div>
+                  </div>
+                  <div class="d-flex gap-1 flex-shrink-0">${action}</div>
+                </div>`;
+            })
+            .join('');
 
-              <div>
-                <div class="fw-semibold">
-                  ${escapeHtml(user.displayName)}
-                </div>
-                <div class="text-muted small">
-                  @${escapeHtml(user.username || '')}
-                </div>
-              </div>
-            </button>
-          `)
-          .join('');
-
-        resultsEl.querySelectorAll('.new-chat-user').forEach((button) => {
-          button.addEventListener('click', async () => {
-            const conversation = await createConversation(
-              button.dataset.userId
-            );
-
-            await loadConversations();
-            await openConversation(conversation.id);
+          resultsEl.querySelectorAll('.new-chat-open').forEach((button) => {
+            button.addEventListener('click', async () => {
+              button.disabled = true;
+              try {
+                const conversation = await createConversation(button.dataset.userId);
+                await loadConversations();
+                await openConversation(conversation.id);
+              } catch (error) {
+                console.error('[chat] Could not open direct conversation:', error);
+                resultsEl.insertAdjacentHTML('afterbegin', `<div class="text-danger small mb-2">${escapeHtml(error.message || 'Could not open conversation.')}</div>`);
+                button.disabled = false;
+              }
+            });
           });
-        });
+
+          resultsEl.querySelectorAll('.new-chat-add').forEach((button) => {
+            button.addEventListener('click', async () => {
+              button.disabled = true;
+              try {
+                await sendFriendRequest(button.dataset.userId);
+                const refreshed = await searchUsers(query);
+                renderSearchUsers(refreshed);
+              } catch (error) {
+                console.error('[chat] Could not send friend request:', error);
+                resultsEl.insertAdjacentHTML('afterbegin', `<div class="text-danger small mb-2">${escapeHtml(error.message || 'Could not send friend request.')}</div>`);
+                button.disabled = false;
+              }
+            });
+          });
+
+          resultsEl.querySelectorAll('.new-chat-accept').forEach((button) => {
+            button.addEventListener('click', async () => {
+              button.disabled = true;
+              try {
+                await acceptFriendRequest(button.dataset.requestId);
+                const refreshed = await searchUsers(query);
+                renderSearchUsers(refreshed);
+              } catch (error) {
+                console.error('[chat] Could not accept friend request:', error);
+                resultsEl.insertAdjacentHTML('afterbegin', `<div class="text-danger small mb-2">${escapeHtml(error.message || 'Could not accept friend request.')}</div>`);
+                button.disabled = false;
+              }
+            });
+          });
+
+          resultsEl.querySelectorAll('.new-chat-reject').forEach((button) => {
+            button.addEventListener('click', async () => {
+              button.disabled = true;
+              try {
+                await rejectFriendRequest(button.dataset.requestId);
+                const refreshed = await searchUsers(query);
+                renderSearchUsers(refreshed);
+              } catch (error) {
+                console.error('[chat] Could not reject friend request:', error);
+                resultsEl.insertAdjacentHTML('afterbegin', `<div class="text-danger small mb-2">${escapeHtml(error.message || 'Could not reject friend request.')}</div>`);
+                button.disabled = false;
+              }
+            });
+          });
+        };
+
+        renderSearchUsers(users);
       } catch (error) {
         console.error('[chat] User search failed:', error);
 
@@ -1247,6 +1306,9 @@ function renderConversationList() {
           </span>
         `
         : '';
+      const relationshipLabel = !isGroup && conv.relationshipStatus && conv.relationshipStatus !== 'friends'
+        ? `<span class="small text-warning ms-2">${conv.relationshipStatus === 'request_sent' ? 'Request pending' : conv.relationshipStatus === 'request_received' ? 'Request received' : 'Add friend to message'}</span>`
+        : '';
 
       const avatar = isGroup
         ? `
@@ -1295,7 +1357,7 @@ function renderConversationList() {
 
             <div class="conversation-bottom-row">
               <span class="conversation-preview">
-                ${previewText}
+                ${previewText}${relationshipLabel}
               </span>
 
               ${unread}
@@ -1399,6 +1461,30 @@ function renderPersonAvatar(element, displayName, avatarUrl) {
   image.src = parsedUrl.href;
 }
 
+/** Render the request action when old history remains after a friendship is removed. */
+function renderFriendshipNotice(conversation) {
+  const status = conversation.relationshipStatus;
+  const name = escapeHtml(conversation.participantName || 'this user');
+  if (status === 'request_sent') {
+    return `<div class="alert alert-secondary m-3 mb-0">Friend request sent to ${name}. You can message or call them after they accept.</div>`;
+  }
+  if (status === 'request_received' && conversation.friendRequestId) {
+    return `
+      <div class="alert alert-secondary m-3 mb-0 d-flex align-items-center justify-content-between flex-wrap gap-2">
+        <span>${name} sent you a friend request. Accept it to continue messaging.</span>
+        <div class="d-flex gap-2">
+          <button type="button" class="btn btn-sm btn-primary" id="friendship-accept-btn">Accept</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="friendship-reject-btn">Reject</button>
+        </div>
+      </div>`;
+  }
+  return `
+    <div class="alert alert-secondary m-3 mb-0 d-flex align-items-center justify-content-between flex-wrap gap-2">
+      <span>You are not friends with ${name}. Send a friend request to message or call them.</span>
+      <button type="button" class="btn btn-sm btn-primary" id="friendship-add-btn">Add Friend</button>
+    </div>`;
+}
+
 /** Open a conversation and load its messages. */
 async function openConversation(conversationId) {
   activeConversationId = conversationId;
@@ -1411,8 +1497,16 @@ async function openConversation(conversationId) {
     (conversation) => String(conversation.id) === String(conversationId)
   );
   // Calling is one-to-one only; never show call controls for group conversations.
+  const relationshipStatus = selectedConversation?.relationshipStatus;
+  const isRestrictedDirect = Boolean(
+    selectedConversation
+    && selectedConversation.type !== 'group'
+    && relationshipStatus
+    && relationshipStatus !== 'friends'
+  );
   const callTargetUserId = selectedConversation && selectedConversation.type !== 'group'
     && selectedConversation.participantId
+    && (!relationshipStatus || relationshipStatus === 'friends')
     ? String(selectedConversation.participantId)
     : null;
   const callTargetName = selectedConversation?.participantName || 'contact';
@@ -1483,12 +1577,14 @@ async function openConversation(conversationId) {
       </button>
     </div>
 
+    ${isRestrictedDirect ? renderFriendshipNotice(selectedConversation) : ''}
+
     <div class="message-list" id="message-list">
       <div class="loading-state"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div></div>
     </div>
     <div class="typing-indicator" id="typing-indicator" style="display:none;"><span></span><span></span><span></span></div>
-    
-    <div class="message-composer" id="message-composer">
+
+    <div class="message-composer" id="message-composer" ${isRestrictedDirect ? 'hidden' : ''}>
 
       <!-- Attachment button -->
       <button
@@ -1577,7 +1673,7 @@ async function openConversation(conversationId) {
       }
 
       const displayName = isGroup
-      
+
         ? (conv.name || conv.participantName || 'Unnamed Group')
         : (conv.participantName || 'Unknown');
 
@@ -1664,6 +1760,46 @@ async function openConversation(conversationId) {
   document.getElementById('message-explorer-btn')?.addEventListener('click', () => {
     openMessageExplorer('all');
   });
+
+  if (isRestrictedDirect && selectedConversation?.participantId) {
+    const refreshRelationshipView = async () => {
+      await loadConversations();
+      await openConversation(conversationId);
+    };
+    document.getElementById('friendship-add-btn')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        await sendFriendRequest(selectedConversation.participantId);
+        await refreshRelationshipView();
+      } catch (error) {
+        alert(error.message || 'Could not send friend request.');
+        button.disabled = false;
+      }
+    });
+    document.getElementById('friendship-accept-btn')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        await acceptFriendRequest(selectedConversation.friendRequestId);
+        await refreshRelationshipView();
+      } catch (error) {
+        alert(error.message || 'Could not accept friend request.');
+        button.disabled = false;
+      }
+    });
+    document.getElementById('friendship-reject-btn')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        await rejectFriendRequest(selectedConversation.friendRequestId);
+        await refreshRelationshipView();
+      } catch (error) {
+        alert(error.message || 'Could not reject friend request.');
+        button.disabled = false;
+      }
+    });
+  }
 
   // Reuse the shared call controller so chat-header calls follow the same
   // authenticated REST lifecycle, WebSocket signaling, and media cleanup.
@@ -1926,7 +2062,7 @@ function openGroupInfo(conversation) {
               </button>
             </div>
           </div>
-        
+
         <h4 class="group-info-members-title">Members</h4>
 
         <div class="group-info-member-list">
