@@ -15,12 +15,34 @@ from app.models.call_session import CallSession
 from app.services.friendship_service import require_friends
 from app.services.connection_manager import manager
 from app.services.message_service import create_message
+from app.services.presence_service import broadcast_presence, persist_last_seen
 
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 MAX_WEBSOCKET_FRAME_BYTES = 64 * 1024
 MAX_MESSAGE_CHARACTERS = 10_000
+PRESENCE_DISCONNECT_GRACE_SECONDS = 5
+_presence_disconnect_tasks: dict[str, asyncio.Task] = {}
+
+
+async def _finalize_presence_disconnect(user_id: str) -> None:
+    """Persist offline state only if the user has no connection after grace."""
+    try:
+        await asyncio.sleep(PRESENCE_DISCONNECT_GRACE_SECONDS)
+        if manager.active_connections.get(user_id):
+            return
+        async with AsyncSessionLocal() as db:
+            await persist_last_seen(db, uuid.UUID(user_id))
+            await broadcast_presence(db, uuid.UUID(user_id))
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("Could not persist or broadcast last-seen for user %s", user_id)
+    finally:
+        current = asyncio.current_task()
+        if _presence_disconnect_tasks.get(user_id) is current:
+            _presence_disconnect_tasks.pop(user_id, None)
 
 
 async def _send_protocol_error(websocket: WebSocket, detail: str) -> None:
@@ -278,7 +300,16 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.close(code=1008)
         return
 
-    await manager.connect(user_id, websocket)
+    was_offline = await manager.connect(user_id, websocket)
+    pending_presence_task = _presence_disconnect_tasks.pop(user_id, None)
+    if pending_presence_task is not None:
+        pending_presence_task.cancel()
+    if was_offline:
+        try:
+            async with AsyncSessionLocal() as db:
+                await broadcast_presence(db, uuid.UUID(user_id))
+        except Exception:
+            logger.exception("Could not broadcast online presence for user %s", user_id)
 
     try:
         while True:
@@ -412,7 +443,14 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
-        manager.disconnect(user_id, websocket)
+        became_offline = manager.disconnect(user_id, websocket)
+        if became_offline:
+            old_task = _presence_disconnect_tasks.pop(user_id, None)
+            if old_task is not None:
+                old_task.cancel()
+            _presence_disconnect_tasks[user_id] = asyncio.create_task(
+                _finalize_presence_disconnect(user_id)
+            )
         try:
             await _finish_calls_after_last_disconnect(user_id)
         except Exception:

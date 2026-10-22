@@ -5,6 +5,7 @@ from app.api.conversations import router as conversations_router
 from app.api.calls import router as calls_router
 from app.api.messages import router as messages_router
 from app.api.websocket import router as websocket_router
+from app.api.presence import router as presence_router
 from app.api.v1.router import router as v1_router
 from app.core.config import settings
 
@@ -26,3 +27,4 @@ app.include_router(conversations_router, prefix="/api")
 app.include_router(messages_router, prefix="/api")
 app.include_router(calls_router, prefix="/api")
 app.include_router(websocket_router)
+app.include_router(presence_router)
