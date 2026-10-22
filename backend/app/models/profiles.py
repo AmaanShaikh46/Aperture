@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Text
+from sqlalchemy import Boolean, DateTime, Text, true
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.database import Base
@@ -33,6 +33,18 @@ class Profile(Base):
     bio: Mapped[str | None] = mapped_column(
         Text,
         nullable=True
+    )
+
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    share_last_seen: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=true(),
     )
 
     created_at: Mapped[datetime] = mapped_column(

@@ -9,18 +9,23 @@ class ConnectionManager:
     def __init__(self):
         self.active_connections: dict[str, set[WebSocket]] = {}
 
-    async def connect(self, user_id: str, websocket: WebSocket):
+    async def connect(self, user_id: str, websocket: WebSocket) -> bool:
         await websocket.accept()
-        self.active_connections.setdefault(user_id, set()).add(websocket)
+        connections = self.active_connections.setdefault(user_id, set())
+        was_offline = not connections
+        connections.add(websocket)
+        return was_offline
 
-    def disconnect(self, user_id: str, websocket: WebSocket):
+    def disconnect(self, user_id: str, websocket: WebSocket) -> bool:
         connections = self.active_connections.get(user_id)
         if not connections:
-            return
+            return False
 
         connections.discard(websocket)
         if not connections:
             self.active_connections.pop(user_id, None)
+            return True
+        return False
 
     async def send_to_user(self, user_id: str, message: dict):
         connections = self.active_connections.get(user_id)

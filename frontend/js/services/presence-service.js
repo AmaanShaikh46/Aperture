@@ -2,7 +2,7 @@
  * APERTURE - Presence Service
  */
 import { USE_MOCK_API } from '../config.js';
-import { get } from './api-client.js';
+import { get, patch } from './api-client.js';
 import { mockUsers } from '../mock/mock-data.js';
 
 /** Get presence info for a user. */
@@ -15,4 +15,14 @@ export async function getPresence(userId) {
   return get(`/api/presence/${userId}`);
 }
 
-export default { getPresence };
+export async function getPresenceSettings() {
+  if (USE_MOCK_API) return { shareLastSeen: true };
+  return get('/api/presence/settings');
+}
+
+export async function updatePresenceSettings(shareLastSeen) {
+  if (USE_MOCK_API) return { shareLastSeen: Boolean(shareLastSeen) };
+  return patch('/api/presence/settings', { shareLastSeen: Boolean(shareLastSeen) });
+}
+
+export default { getPresence, getPresenceSettings, updatePresenceSettings };

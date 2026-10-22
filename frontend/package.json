@@ -10,11 +10,16 @@
   },
   "devDependencies": {
     "playwright": "^1.62.1",
-    "vite": "^5.4.2"
+    "vite": "^6.4.5"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.4",
     "bootstrap": "^5.3.8",
     "bootstrap-icons": "^1.13.1"
+  },
+  "overrides": {
+    "vite": {
+      "esbuild": "^0.25.0"
+    }
   }
 }

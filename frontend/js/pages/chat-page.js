@@ -25,7 +25,7 @@ import {
 import { getPresence } from '../services/presence-service.js';
 import { auth } from '../services/auth-service.js';
 import { eventRouter, EventTypes } from '../realtime/event-router.js';
-import { sendSocketEvent } from '../realtime/websocket-client.js';
+import { sendSocketEvent, onWebSocketStateChange } from '../realtime/websocket-client.js';
 import {
   escapeHtml,
   formatTime,
@@ -49,6 +49,8 @@ let pendingAttachment = null;
 let pendingAttachmentPreviewUrl = null;
 let typingTimeout = null;
 let unsubscribeFns = [];
+let activePresence = null;
+let presenceRefreshTimer = null;
 
 const MESSAGE_PAGE_SIZE = 50;
 let messagesLoadGeneration = 0;
@@ -263,6 +265,26 @@ export async function initChatPage(container) {
   );
 
   unsubscribeFns.push(
+    eventRouter.on(EventTypes.PRESENCE_ONLINE, (presence) => {
+      applyPresenceToHeader(presence);
+    }),
+  );
+  unsubscribeFns.push(
+    eventRouter.on(EventTypes.PRESENCE_OFFLINE, (presence) => {
+      applyPresenceToHeader(presence);
+    }),
+  );
+  unsubscribeFns.push(
+    onWebSocketStateChange((state) => {
+      if (state !== 'connected') return;
+      refreshActivePresence();
+    }),
+  );
+  if (presenceRefreshTimer) clearInterval(presenceRefreshTimer);
+  presenceRefreshTimer = setInterval(() => {
+    if (activePresence) applyPresenceToHeader(activePresence);
+  }, 60_000);
+  unsubscribeFns.push(
     eventRouter.on(EventTypes.PROFILE_UPDATED, (profile) => {
       handleProfileUpdated(profile);
     }),
@@ -289,6 +311,49 @@ export async function initChatPage(container) {
   );
 }
 
+
+/** Update the active direct-chat header from an authorized live presence event. */
+function applyPresenceToHeader(presence) {
+  if (!presence?.userId) return;
+  const activeConversation = conversations.find(
+    (item) => String(item.id) === String(activeConversationId)
+  );
+  if (!activeConversation || activeConversation.type === 'group'
+      || String(activeConversation.participantId) !== String(presence.userId)) return;
+  activePresence = { ...presence };
+  const statusEl = document.getElementById('chat-header-status');
+  if (!statusEl) return;
+  if (presence.presence === 'online') {
+    statusEl.innerHTML = '<span class="presence-dot online"></span> Online';
+    statusEl.setAttribute('aria-label', 'Online');
+  } else if (presence.presence === 'hidden') {
+    statusEl.textContent = 'Status hidden';
+    statusEl.setAttribute('aria-label', 'Status hidden');
+  } else if (presence.presence === 'offline' && presence.lastSeen) {
+    statusEl.textContent = `Last seen ${formatLastSeen(presence.lastSeen)}`;
+    statusEl.setAttribute('aria-label', statusEl.textContent);
+  } else {
+    statusEl.textContent = 'Status unavailable';
+    statusEl.setAttribute('aria-label', 'Status unavailable');
+  }
+}
+
+/** Refresh the active direct conversation's snapshot after a WebSocket reconnect. */
+async function refreshActivePresence() {
+  const conversationId = String(activeConversationId || '');
+  const conversation = conversations.find((item) => String(item.id) === conversationId);
+  if (!conversation || conversation.type === 'group' || !conversation.participantId) return;
+  try {
+    const presence = await getPresence(conversation.participantId);
+    if (String(activeConversationId) === conversationId) applyPresenceToHeader(presence);
+  } catch {
+    if (String(activeConversationId) === conversationId) {
+      activePresence = null;
+      const statusEl = document.getElementById('chat-header-status');
+      if (statusEl) statusEl.textContent = 'Status unavailable';
+    }
+  }
+}
 
 /**
  * Apply a realtime profile update to conversations currently loaded in chat.
@@ -1488,6 +1553,7 @@ function renderFriendshipNotice(conversation) {
 /** Open a conversation and load its messages. */
 async function openConversation(conversationId) {
   activeConversationId = conversationId;
+  activePresence = null;
 
   document
     .querySelector('.chat-shell')
@@ -1731,22 +1797,22 @@ async function openConversation(conversationId) {
           conv.participantAvatar
         );
         // Presence applies to individual conversations, not groups.
-        statusEl.textContent = '';
+        statusEl.textContent = conv.participantId ? 'Checking status…' : 'Status unavailable';
+        const statusConversationId = String(conversationId);
 
         if (conv.participantId) {
           try {
             const presence = await getPresence(conv.participantId);
-
-            if (presence.presence === 'online') {
-              statusEl.innerHTML =
-                '<span class="presence-dot online"></span> Online';
-            } else {
-              statusEl.textContent =
-                `Last seen ${formatLastSeen(presence.lastSeen)}`;
+            // Ignore a slow response if the user switched conversations meanwhile.
+            if (String(activeConversationId) === statusConversationId) {
+              applyPresenceToHeader(presence);
             }
           } catch (error) {
             // A presence lookup failure must not prevent the chat from opening.
-            statusEl.textContent = '';
+            if (String(activeConversationId) === statusConversationId) {
+              statusEl.textContent = 'Status unavailable';
+              statusEl.setAttribute('aria-label', 'Status unavailable');
+            }
           }
         }
       }
@@ -3552,6 +3618,9 @@ function hideTypingIndicator() {
 export function destroyChatPage() {
   unsubscribeFns.forEach((fn) => fn());
   unsubscribeFns = [];
+  if (presenceRefreshTimer) clearInterval(presenceRefreshTimer);
+  presenceRefreshTimer = null;
+  activePresence = null;
   activeConversationId = null;
   messagesLoadGeneration += 1;
   messagePaginationConversationId = null;

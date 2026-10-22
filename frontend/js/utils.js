@@ -65,18 +65,28 @@ export function formatDate(iso) {
 
 /** Format a "last seen" timestamp into a human-readable relative string. */
 export function formatLastSeen(iso) {
-  if (!iso) return 'a while ago';
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return 'a while ago';
-  const diff = Date.now() - d.getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins} min ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours} hr ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  if (!iso) return 'time unavailable';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return 'time unavailable';
+  const now = new Date();
+  const diffMs = Math.max(0, now.getTime() - date.getTime());
+  const diffHours = Math.floor(diffMs / 3_600_000);
+  const diffDays = Math.floor(diffMs / 86_400_000);
+  const time = date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const sameLocalDay = date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  const isYesterday = date.getFullYear() === yesterday.getFullYear()
+    && date.getMonth() === yesterday.getMonth()
+    && date.getDate() === yesterday.getDate();
+  if (sameLocalDay && diffHours < 24) return `today at ${time}`;
+  if (isYesterday) return `yesterday at ${time}`;
+  if (diffDays < 7) return `${Math.max(1, diffDays)} ${diffDays === 1 ? 'day' : 'days'} ago`;
+  if (diffDays < 30) return `${diffDays} days ago`;
+  const months = Math.max(1, Math.floor(diffDays / 30));
+  return `${months} ${months === 1 ? 'month' : 'months'} ago`;
 }
 
 /** Escape HTML to prevent injection when building strings. */

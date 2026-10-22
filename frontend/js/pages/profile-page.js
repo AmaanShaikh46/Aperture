@@ -9,6 +9,7 @@ import {
 } from '../services/user-service.js';
 import { auth } from '../services/auth-service.js';
 import { getInitials, avatarColor, showToast } from '../utils.js';
+import { getPresenceSettings, updatePresenceSettings } from '../services/presence-service.js';
 
 const MAX_AVATAR_SIZE = 5 * 1024 * 1024;
 const AVATAR_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
@@ -21,6 +22,7 @@ let isUploadingAvatar = false;
 export async function initProfilePage(container) {
   renderShell(container);
   await loadProfile();
+  await loadPresencePreference();
   setupEventListeners();
 }
 
@@ -82,24 +84,15 @@ function renderShell(container) {
         <h3 class="section-title">Privacy</h3>
         <div class="profile-field-row">
           <div>
-            <div class="field-label">Online Status</div>
-            <div class="field-desc">Show when you're online</div>
+            <div class="field-label">Share last seen</div>
+            <div class="field-desc">Let accepted friends see when you're online or when you were last online.</div>
           </div>
           <div class="form-check form-switch">
-            <input class="form-check-input" type="checkbox" id="setting-online-status" checked />
-            <label class="form-check-label" for="setting-online-status" aria-label="Online status"></label>
+            <input class="form-check-input" type="checkbox" id="setting-share-last-seen" checked disabled aria-describedby="presence-setting-status" />
+            <label class="form-check-label" for="setting-share-last-seen" aria-label="Share last seen"></label>
           </div>
         </div>
-        <div class="profile-field-row">
-          <div>
-            <div class="field-label">Last Seen</div>
-            <div class="field-desc">Show your last seen time</div>
-          </div>
-          <div class="form-check form-switch">
-            <input class="form-check-input" type="checkbox" id="setting-last-seen" checked />
-            <label class="form-check-label" for="setting-last-seen" aria-label="Last seen"></label>
-          </div>
-        </div>
+        <div id="presence-setting-status" class="small text-muted" role="status" aria-live="polite"></div>
       </div>
 
       <div class="profile-section">
@@ -229,6 +222,23 @@ async function loadProfile() {
   }
 }
 
+async function loadPresencePreference() {
+  const toggle = document.getElementById('setting-share-last-seen');
+  const status = document.getElementById('presence-setting-status');
+  if (!toggle) return;
+  try {
+    const settings = await getPresenceSettings();
+    toggle.checked = settings.shareLastSeen !== false;
+    toggle.disabled = false;
+    if (status) status.textContent = '';
+  } catch (error) {
+    toggle.checked = false;
+    toggle.disabled = true;
+    if (status) status.textContent = 'Privacy setting unavailable. Try reloading the page.';
+    console.error('[profile] Could not load presence privacy setting:', error);
+  }
+}
+
 function setButtonBusy(button, busy, busyText, normalHtml) {
   if (!button) return;
   button.disabled = busy;
@@ -347,15 +357,31 @@ function setupEventListeners() {
     if (button.dataset.theme === currentTheme) button.classList.add('active');
   });
 
-  // These preferences currently persist in this browser only. Backend enforcement
-  // for privacy, notifications, and Assist preferences is a separate follow-up.
+  // Presence privacy is persisted by the backend and enforced for API/WebSocket data.
+  const presenceToggle = document.getElementById('setting-share-last-seen');
+  const presenceStatus = document.getElementById('presence-setting-status');
+  presenceToggle?.addEventListener('change', async () => {
+    if (presenceToggle.disabled) return;
+    const requestedValue = presenceToggle.checked;
+    presenceToggle.disabled = true;
+    if (presenceStatus) presenceStatus.textContent = 'Saving…';
+    try {
+      const saved = await updatePresenceSettings(requestedValue);
+      presenceToggle.checked = saved.shareLastSeen !== false;
+      if (presenceStatus) presenceStatus.textContent = 'Privacy setting saved.';
+    } catch (error) {
+      presenceToggle.checked = !requestedValue;
+      if (presenceStatus) presenceStatus.textContent = 'Could not save this setting. Please try again.';
+      showToast('Could not save your presence privacy setting.', 'danger');
+    } finally {
+      presenceToggle.disabled = false;
+    }
+  });
+
+  // Other preferences remain browser-local, as before.
   const localSettings = [
-    'setting-online-status',
-    'setting-last-seen',
-    'setting-msg-notif',
-    'setting-call-notif',
-    'setting-voice-feedback',
-    'setting-auto-confirm',
+    'setting-msg-notif', 'setting-call-notif',
+    'setting-voice-feedback', 'setting-auto-confirm',
   ];
   localSettings.forEach((id) => {
     const element = document.getElementById(id);
