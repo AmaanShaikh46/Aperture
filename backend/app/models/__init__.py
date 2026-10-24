@@ -20,4 +20,6 @@ __all__ = [
     "MessageReceipt",
     "CallSession",
     "Attachment",
+    "AssistCommand",
 ]
+from app.models.assist_command import AssistCommand

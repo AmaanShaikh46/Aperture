@@ -28,6 +28,12 @@ class Message(Base):
         nullable=False,
     )
 
+    assist_command_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("assist_commands.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+    )
+
     content: Mapped[str] = mapped_column(
         Text,
         nullable=False,
