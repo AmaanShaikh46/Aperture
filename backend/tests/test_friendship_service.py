@@ -276,7 +276,12 @@ async def test_create_call_does_not_notify_if_friendship_disappears_before_deliv
     caller_id, callee_id = uuid.uuid4(), uuid.uuid4()
     caller = SimpleNamespace(id=caller_id, username="caller", display_name="Caller", avatar_url=None)
     callee = SimpleNamespace(id=callee_id, username="callee", display_name="Callee", avatar_url=None)
+    lock_results = [
+        FakeResult(scalar=participant_id)
+        for participant_id in sorted((caller_id, callee_id), key=lambda value: value.int)
+    ]
     db = CallCreationSession([
+        *lock_results,
         FakeResult(),  # No existing call: initial active-call lookup.
         lambda session: FakeResult(scalar=session.added[0]),  # Lock the just-created call.
     ])
@@ -321,7 +326,12 @@ async def test_create_call_notifies_only_after_rechecking_friendship(monkeypatch
     caller_id, callee_id = uuid.uuid4(), uuid.uuid4()
     caller = SimpleNamespace(id=caller_id, username="caller", display_name="Caller", avatar_url=None)
     callee = SimpleNamespace(id=callee_id, username="callee", display_name="Callee", avatar_url=None)
+    lock_results = [
+        FakeResult(scalar=participant_id)
+        for participant_id in sorted((caller_id, callee_id), key=lambda value: value.int)
+    ]
     db = CallCreationSession([
+        *lock_results,
         FakeResult(),  # No existing call: initial active-call lookup.
         lambda session: FakeResult(scalar=session.added[0]),  # Lock the just-created call.
     ])

@@ -20,6 +20,21 @@ TERMINAL_STATUSES = {"rejected", "completed", "cancelled", "missed"}
 ACTIVE_STATUSES = {"ringing", "accepted"}
 
 
+async def _lock_call_participants(
+    db: AsyncSession,
+    *user_ids: uuid.UUID,
+) -> None:
+    """Serialize call creation for shared participants until transaction end."""
+    for participant_id in sorted(set(user_ids), key=lambda value: value.int):
+        result = await db.execute(
+            select(Profile.id)
+            .where(Profile.id == participant_id)
+            .with_for_update()
+        )
+        if result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=404, detail="Call participant not found")
+
+
 def _name(profile: Profile | None) -> str:
     if profile is None:
         return "Unknown"
@@ -164,6 +179,7 @@ async def create_call(
 
     # Calls follow the same mutual-friend policy as direct messages.
     await require_friends(db, caller_id, callee_id)
+    await _lock_call_participants(db, caller_id, callee_id)
 
     in_progress = await db.execute(
         select(CallSession.id).where(

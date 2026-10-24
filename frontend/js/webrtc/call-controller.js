@@ -453,6 +453,57 @@ function cleanupCall(refreshHistory) {
   if (refreshHistory) window.dispatchEvent(new CustomEvent('aperture:call-history-refresh'));
 }
 
+/**
+ * Attach the UI/signaling lifecycle to a call already created by Voice Assist.
+ * Do not call createCall here: the Assist API has already persisted the call and
+ * notified the recipient. This ensures the caller sees the ringing screen and
+ * can receive the existing call.accepted event using the same call ID.
+ */
+function attachExistingOutgoingCall(call) {
+  if (!call?.id) throw new Error('Voice Assist did not return a call ID.');
+  if (currentCall?.id === call.id) return true;
+  if (currentCall || outgoingRequestPending) {
+    notify('Finish your current call before starting another one.');
+    return false;
+  }
+
+  currentCall = {
+    id: call.id,
+    role: 'caller',
+    callType: call.callType === 'video' ? 'video' : 'audio',
+    displayName: call.displayName || 'Your friend',
+    avatarUrl: call.avatarUrl || null,
+    status: call.status || 'ringing',
+  };
+  speakerEnabled = true;
+  renderOutgoing();
+
+  const pendingEvent = pendingLifecycleEvents.get(call.id);
+  pendingLifecycleEvents.delete(call.id);
+  if (pendingEvent) {
+    if (pendingEvent.type === EventTypes.CALL_ACCEPTED) {
+      onAccepted(pendingEvent.payload).catch((error) => {
+        console.error('[calls] Could not resume Voice Assist call:', error);
+      });
+    } else if (pendingEvent.type === EventTypes.CALL_REJECTED) {
+      onRejected(pendingEvent.payload);
+    } else if (pendingEvent.type === EventTypes.CALL_ENDED) {
+      onEnded(pendingEvent.payload);
+    }
+  }
+
+  clearTimeout(ringTimeout);
+  if (currentCall?.id === call.id && currentCall.status === 'ringing') {
+    ringTimeout = setTimeout(async () => {
+      if (currentCall?.id === call.id && currentCall.status === 'ringing') {
+        notify('No answer. The call has been cancelled.', 'secondary');
+        await finishCurrentCall(true);
+      }
+    }, 45_000);
+  }
+  return true;
+}
+
 export function initializeCallRuntime() {
   if (initialized) return;
   initialized = true;
@@ -488,5 +539,5 @@ export async function destroyCallRuntime() {
   initialized = false;
 }
 
-export { startOutgoingCall };
-export default { initializeCallRuntime, destroyCallRuntime, startOutgoingCall };
+export { startOutgoingCall, attachExistingOutgoingCall };
+export default { initializeCallRuntime, destroyCallRuntime, startOutgoingCall, attachExistingOutgoingCall };

@@ -12,6 +12,7 @@ import { escapeHtml } from '../utils.js';
 let containerEl = null;
 let holdActive = false;
 let stateUnsub = null;
+let clearUiHandler = null;
 
 /** Initialize the Assist page. */
 export function initAssistPage(container) {
@@ -19,6 +20,8 @@ export function initAssistPage(container) {
   renderShell();
   setupControls();
   setupStateListener();
+  clearUiHandler = () => clearAssistUi();
+  window.addEventListener('aperture:assist-clear', clearUiHandler);
   updateStateDisplay(AssistState.IDLE);
 }
 
@@ -202,6 +205,8 @@ function setupStateListener() {
     updateStateDisplay(newState);
     if (newState === AssistState.CONFIRMING) {
       renderConfirmation();
+    } else if ([AssistState.CANCELLED, AssistState.SUCCESS, AssistState.IDLE].includes(newState)) {
+      clearAssistUi();
     }
   });
 }
@@ -237,17 +242,29 @@ function updateStateDisplay(state) {
   const displayEl = document.getElementById('assist-state-display');
   displayEl.className = `assist-state-display state-${state.toLowerCase()}`;
 
-  // Reset transcript on idle
-  if (state === AssistState.IDLE) {
-    setTimeout(() => {
-      const transcriptEl = document.getElementById('assist-transcript');
-      const confirmEl = document.getElementById('assist-confirmation');
-      const errorEl = document.getElementById('assist-error');
-      if (transcriptEl) transcriptEl.style.display = 'none';
-      if (confirmEl) confirmEl.style.display = 'none';
-      if (errorEl) errorEl.style.display = 'none';
-    }, 500);
-  }
+  if (state === AssistState.IDLE) clearAssistUi();
+}
+
+/** Clear all transient transcript, interpretation, confirmation and error UI. */
+function clearAssistUi() {
+  const transcriptEl = document.getElementById('assist-transcript');
+  const confirmEl = document.getElementById('assist-confirmation');
+  const errorEl = document.getElementById('assist-error');
+  const saidEl = document.getElementById('transcript-said');
+  const interpretationEl = document.getElementById('interpretation-content');
+  const messageEl = document.getElementById('confirmation-message');
+  const buttonsEl = document.getElementById('confirmation-buttons');
+  const errorMessageEl = document.getElementById('assist-error-message');
+  const errorButtonsEl = document.getElementById('assist-error-buttons');
+  if (transcriptEl) transcriptEl.style.display = 'none';
+  if (confirmEl) confirmEl.style.display = 'none';
+  if (errorEl) errorEl.style.display = 'none';
+  if (saidEl) saidEl.textContent = '';
+  if (interpretationEl) interpretationEl.textContent = '';
+  if (messageEl) messageEl.textContent = '';
+  if (buttonsEl) buttonsEl.replaceChildren();
+  if (errorMessageEl) errorMessageEl.textContent = '';
+  if (errorButtonsEl) errorButtonsEl.replaceChildren();
 }
 
 /** Render the confirmation UI. */
@@ -269,8 +286,10 @@ function renderConfirmation() {
     <div class="interpretation-row"><span class="interp-label">Action:</span> ${escapeHtml(command.intent || '')}</div>
     ${command.recipient ? `<div class="interpretation-row"><span class="interp-label">Recipient:</span> ${escapeHtml(command.recipient.displayName || '')}</div>` : ''}
     ${command.message ? `<div class="interpretation-row"><span class="interp-label">Message:</span> "${escapeHtml(command.message)}"</div>` : ''}
-    <div class="interpretation-row"><span class="interp-label">Confidence:</span> ${Math.round((command.confidence || 0) * 100)}%</div>
-    <div class="interpretation-row"><span class="interp-label">Risk:</span> <span class="risk-badge risk-${(command.risk || '').toLowerCase()}">${escapeHtml(command.risk || '')}</span></div>`;
+    <div class="interpretation-row"><span class="interp-label">Intent confidence (rule-based):</span> ${Math.round((command.intentConfidence ?? command.confidence ?? 0) * 100)}%</div>
+    <div class="interpretation-row"><span class="interp-label">Recipient match score:</span> ${Math.round((command.recipientMatchScore ?? command.confidence ?? 0) * 100)}%</div>
+    <div class="interpretation-row"><span class="interp-label">Risk:</span> <span class="risk-badge risk-${(command.risk || '').toLowerCase()}">${escapeHtml(command.risk || '')}</span></div>
+    ${command.confidenceMethod ? `<div class="small text-muted mt-1">Scores are rule-based estimates, not calibrated probabilities.</div>` : ''}`;
 
   // Render confirmation message
   const spoken = command.spokenResponse || '';
@@ -283,9 +302,24 @@ function renderConfirmation() {
     <button class="btn btn-outline-secondary assist-retry-btn" aria-label="Retry">RETRY</button>
     <button class="btn btn-outline-danger assist-cancel-btn" aria-label="Cancel">CANCEL</button>`;
 
-  btnsEl.querySelector('.assist-confirm-btn').addEventListener('click', () => assistController.confirm());
-  btnsEl.querySelector('.assist-retry-btn').addEventListener('click', () => assistController.retry());
-  btnsEl.querySelector('.assist-cancel-btn').addEventListener('click', () => assistController.cancel());
+  btnsEl.querySelector('.assist-confirm-btn').addEventListener('click', async (event) => {
+    setConfirmationButtonsBusy(true);
+    try { await assistController.confirm(); } finally { setConfirmationButtonsBusy(false); }
+  });
+  btnsEl.querySelector('.assist-retry-btn').addEventListener('click', async () => {
+    setConfirmationButtonsBusy(true);
+    try { await assistController.retry(); } finally { setConfirmationButtonsBusy(false); }
+  });
+  btnsEl.querySelector('.assist-cancel-btn').addEventListener('click', async () => {
+    setConfirmationButtonsBusy(true);
+    try { await assistController.cancel(); } finally { setConfirmationButtonsBusy(false); }
+  });
+}
+
+/** Prevent duplicate clicks while a confirmation request is in flight. */
+function setConfirmationButtonsBusy(busy) {
+  const buttons = document.querySelectorAll('#confirmation-buttons button');
+  buttons.forEach((button) => { button.disabled = busy; });
 }
 
 /** Show an error with retry/cancel buttons. */
@@ -293,26 +327,36 @@ function showError(message) {
   const errorEl = document.getElementById('assist-error');
   const msgEl = document.getElementById('assist-error-message');
   const btnsEl = document.getElementById('assist-error-buttons');
+  const confirmEl = document.getElementById('assist-confirmation');
+  if (confirmEl) confirmEl.style.display = 'none';
   errorEl.style.display = 'block';
   msgEl.textContent = message || 'I didn\'t understand that.';
   btnsEl.innerHTML = `
     <button class="btn btn-outline-secondary assist-error-retry-btn">RETRY</button>
     <button class="btn btn-outline-danger assist-error-cancel-btn">CANCEL</button>`;
-  btnsEl.querySelector('.assist-error-retry-btn').addEventListener('click', () => {
+  btnsEl.querySelector('.assist-error-retry-btn').addEventListener('click', async () => {
     errorEl.style.display = 'none';
-    assistState.transition(AssistState.RETRY);
-    assistState.transition(AssistState.LISTENING);
+    if (confirmationController.getPendingCommand()) {
+      await assistController.retry();
+      return;
+    }
+    assistState.forceState(AssistState.IDLE);
     assistController.startListening();
   });
-  btnsEl.querySelector('.assist-error-cancel-btn').addEventListener('click', () => {
-    errorEl.style.display = 'none';
-    assistState.reset();
+  btnsEl.querySelector('.assist-error-cancel-btn').addEventListener('click', async () => {
+    if (confirmationController.getPendingCommand()) {
+      await assistController.cancel();
+    } else {
+      assistState.reset();
+      clearAssistUi();
+    }
   });
 }
 
 /** Clean up. */
 export function destroyAssistPage() {
   if (stateUnsub) stateUnsub();
+  if (clearUiHandler) window.removeEventListener('aperture:assist-clear', clearUiHandler);
   assistController.cleanup();
 }
 

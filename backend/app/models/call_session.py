@@ -24,6 +24,11 @@ class CallSession(Base):
     callee_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
     )
+    assist_command_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("assist_commands.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+    )
     call_type: Mapped[str] = mapped_column(Text, nullable=False, default="audio", server_default="audio")
     status: Mapped[str] = mapped_column(Text, nullable=False, default="ringing", server_default="ringing")
     created_at: Mapped[datetime] = mapped_column(

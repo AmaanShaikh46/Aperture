@@ -30,7 +30,7 @@ const transitions = {
   [AssistState.SUCCESS]: [AssistState.IDLE],
   [AssistState.RETRY]: [AssistState.LISTENING, AssistState.IDLE],
   [AssistState.CANCELLED]: [AssistState.IDLE],
-  [AssistState.ERROR]: [AssistState.IDLE, AssistState.RETRY],
+  [AssistState.ERROR]: [AssistState.IDLE, AssistState.RETRY, AssistState.CANCELLED],
 };
 
 let currentState = AssistState.IDLE;
