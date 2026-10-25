@@ -31,23 +31,22 @@ The live deployment uses limited hosted-service resources. For evaluation, pleas
 - Incoming and outgoing call flows, including accepting, rejecting, cancelling, and ending calls.
 - Microphone and camera controls during calls.
 - WebSocket-based communication for real-time application events and call signalling.
-- STUN/TURN configuration for WebRTC connectivity. The deployed application uses Metered TURN credentials when configured.
+- STUN/TURN configuration for WebRTC connectivity, including Metered TURN credentials when configured.
 - Responsive interface for desktop and mobile screens.
 - Backend health endpoints for checking the API and database connection.
-
-### In Progress
-
-- **User presence:** showing when users are online or offline and keeping presence information up to date.
-- **Voice Assist:** the project has an accessibility-focused interface and a browser-based speech input/output foundation. The complete flow for interpreting a user's intention, identifying the correct contact, displaying confidence, and safely carrying out the requested action is still being developed.
-- **Friend requests and accepted friendships:** the code now includes friend requests, accept/reject actions, and friendship checks for direct messages and calls. This change needs its database migration and deployment before it is available in the live demo.
+- User presence, including online and offline status indicators.
+- Friend request workflows, including sending, accepting, and rejecting requests, with friendship checks for direct messaging and calls.
+- **Voice Assist:** Accessibility-focused voice interaction for supported messaging and calling commands.
+- **Voice command interpretation:** Identifies the intended communication action and extracts relevant details from supported spoken commands.
+- **Contact matching and clarification:** Matches spoken names against saved contacts and asks the user to clarify when a command could refer to multiple contacts or the intended recipient is uncertain.
+- **Action confirmation:** Presents the intended action and relevant details for review, allowing the user to confirm or cancel before execution.
+- **Video Assist:** Video communication functionality designed to support accessibility-focused interactions.
 
 ### Planned
 
-- **Voice commands for messaging and calls:** a user should be able to say commands such as “Call Shivratn” or “Message Shivratn” and have Aperture interpret and carry out the intended action.
-- **Confidence and contact selection:** show the raw speech transcript alongside Aperture's interpretation and a confidence level. Contact matching should consider the user's previous interactions. If a command could refer to more than one person, Aperture should ask the user to clarify instead of silently choosing the wrong contact.
-- **Video Assist with hand-sign recognition:** recognize supported hand signs during a video call and convert them into displayed text or an interpreted sequence. The recognition prototype and the final behaviour are still being planned; integration into Aperture has not been completed.
+- **Enhanced sign-language recognition:** Improve recognition of supported hand signs during video calls, with the goal of translating recognized signs into displayed text or interpreted sequences and making communication more accessible for sign-language users.
 
-The status above distinguishes existing application functionality from features that are still being developed or planned. Planned features should not be considered available in the live demo yet.
+Aperture combines real-time communication, messaging, calling, and accessibility-focused interaction in one platform. Its design emphasizes inclusive communication, reliable contact selection, clear action confirmation, and user control.
 
 ## Technology Stack
 
