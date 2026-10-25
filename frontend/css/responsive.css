@@ -176,3 +176,16 @@
     display: none;
   }
 }
+
+
+@media (max-width: 600px) {
+  .aperture-voice-overlay { left:12px; right:12px; bottom: calc(112px + env(safe-area-inset-bottom)); width:auto; max-height:min(32dvh, 250px); padding:12px; border-radius:14px; }
+  .aperture-voice-transcript { min-height:42px; max-height:64px; }
+  .aperture-voice-actions .btn { flex:1 1 auto; justify-content:center; padding:.4rem .55rem; font-size:.78rem; }
+}
+@media (max-height: 500px) and (orientation: landscape) {
+  .aperture-voice-overlay { bottom: 62px; max-height: calc(100dvh - 80px); }
+}
+
+@media (max-width:600px) { .aperture-voice-launcher { right:16px; bottom:calc(132px + env(safe-area-inset-bottom)); width:46px; height:46px; } }
+@media (max-width:600px) and (max-height:700px) { .aperture-voice-overlay { bottom:calc(104px + env(safe-area-inset-bottom)); max-height:calc(100dvh - 190px); } }

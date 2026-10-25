@@ -500,3 +500,25 @@
   padding: 1rem;
   text-align: center;
 }
+
+/* Persistent, compact Voice Assist quick panel. */
+.aperture-voice-overlay { position: fixed; z-index: 1200; right: max(20px, calc((100vw - 1200px) / 2 + 20px)); bottom: 150px; width: min(340px, calc(100vw - 32px)); max-height: min(320px, calc(100dvh - 130px)); overflow: auto; padding: 14px; color: var(--aperture-text, #eef2f8); background: var(--aperture-surface, #191c23); border: 1px solid var(--aperture-border, #343945); border-radius: 16px; box-shadow: 0 12px 40px rgba(0,0,0,.35); }
+.aperture-voice-overlay[hidden] { display: none !important; }
+.aperture-voice-head { display:flex; align-items:center; gap:9px; }
+.aperture-voice-status-dot { width:9px; height:9px; flex:0 0 9px; border-radius:50%; background:#8b93a2; }
+.aperture-voice-status-dot.is-listening { background:#31d18b; box-shadow:0 0 0 5px rgba(49,209,139,.13); }
+.aperture-voice-heading { min-width:0; flex:1; display:flex; flex-direction:column; gap:2px; }
+.aperture-voice-heading strong { font-size:.9rem; line-height:1.2; }
+.aperture-voice-heading small { color:var(--aperture-text-muted,#a7afbd); font-size:.72rem; }
+.aperture-voice-iconbtn { border:0; background:transparent; color:inherit; width:30px; height:30px; border-radius:8px; }
+.aperture-voice-iconbtn:hover { background:rgba(128,140,160,.15); }
+.aperture-voice-transcript-label { margin-top:13px; color:var(--aperture-text-muted,#a7afbd); font-size:.65rem; font-weight:700; letter-spacing:.08em; }
+.aperture-voice-transcript { margin-top:5px; padding:10px 11px; min-height:54px; max-height:88px; overflow:auto; background:rgba(120,135,160,.10); border-radius:10px; font-size:.84rem; line-height:1.4; overflow-wrap:anywhere; }
+.aperture-voice-actions { display:flex; flex-wrap:wrap; gap:7px; margin-top:11px; }
+.aperture-voice-actions .btn { display:inline-flex; align-items:center; gap:6px; border-radius:9px; }
+
+.aperture-voice-launcher { position:fixed; z-index:1190; right:max(24px,calc((100vw - 1200px)/2 + 24px)); bottom:150px; width:48px; height:48px; border:1px solid rgba(100,160,255,.55); border-radius:50%; color:#fff; background:#1769e8; box-shadow:0 8px 24px rgba(0,0,0,.32); font-size:1.15rem; }
+.aperture-voice-launcher:hover { filter:brightness(1.08); transform:translateY(-1px); }
+
+.aperture-voice-interpreted { margin-top:5px; padding:8px 10px; border-radius:9px; background:rgba(23,105,232,.12); border:1px solid rgba(70,135,245,.18); font-size:.82rem; font-weight:600; overflow-wrap:anywhere; }
+

@@ -123,6 +123,16 @@ function renderShell(container) {
         <h3 class="section-title">Aperture Assist</h3>
         <div class="profile-field-row">
           <div>
+            <div class="field-label">Voice Assist floating panel</div>
+            <div class="field-desc">Show or hide the floating Voice Assist controls across the app.</div>
+          </div>
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="setting-voice-assist-overlay" />
+            <label class="form-check-label" for="setting-voice-assist-overlay" aria-label="Voice Assist floating panel"></label>
+          </div>
+        </div>
+        <div class="profile-field-row">
+          <div>
             <div class="field-label">Voice Feedback</div>
             <div class="field-desc">Read responses aloud</div>
           </div>
@@ -381,13 +391,25 @@ function setupEventListeners() {
   // Other preferences remain browser-local, as before.
   const localSettings = [
     'setting-msg-notif', 'setting-call-notif',
-    'setting-voice-feedback', 'setting-auto-confirm',
+    'setting-voice-feedback', 'setting-auto-confirm', 'setting-voice-assist-overlay',
   ];
   localSettings.forEach((id) => {
     const element = document.getElementById(id);
     if (!element) return;
     const storedValue = localStorage.getItem(`aperture-${id}`);
     if (storedValue !== null) element.checked = storedValue === 'true';
+    // The floating Voice Assist toggle controls the app-level launcher and panel.
+    if (id === 'setting-voice-assist-overlay') {
+      const stored = localStorage.getItem('apertureVoiceAssistEnabled');
+      element.checked = stored !== 'false';
+      element.addEventListener('change', () => {
+        localStorage.setItem('apertureVoiceAssistEnabled', String(element.checked));
+        window.dispatchEvent(new CustomEvent('aperture:voice-assist-setting-changed', {
+          detail: { enabled: element.checked },
+        }));
+      });
+      return;
+    }
     element.addEventListener('change', () => {
       localStorage.setItem(`aperture-${id}`, String(element.checked));
     });

@@ -91,12 +91,11 @@ export function speak(text) {
   if (!isSpeechSynthesisAvailable() || !text) return;
   window.speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(text);
-  // Keep recognition in Indian English (en-IN), but speak responses in American English.
   utterance.lang = 'en-US';
   const voices = window.speechSynthesis.getVoices();
-  const americanVoice = voices.find((voice) => /^en-US$/i.test(voice.lang))
-    || voices.find((voice) => /^en-US-/i.test(voice.lang));
-  if (americanVoice) utterance.voice = americanVoice;
+  utterance.voice = voices.find((voice) => /^en-US$/i.test(voice.lang))
+    || voices.find((voice) => /^en-US-/i.test(voice.lang))
+    || null;
   utterance.rate = 1.0;
   utterance.pitch = 1.0;
   window.speechSynthesis.speak(utterance);
