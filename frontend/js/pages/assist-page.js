@@ -13,6 +13,7 @@ let containerEl = null;
 let holdActive = false;
 let stateUnsub = null;
 let clearUiHandler = null;
+let clarificationHandler = null;
 
 /** Initialize the Assist page. */
 export function initAssistPage(container) {
@@ -21,7 +22,9 @@ export function initAssistPage(container) {
   setupControls();
   setupStateListener();
   clearUiHandler = () => clearAssistUi();
+  clarificationHandler = (event) => showClarificationOptions(event.detail);
   window.addEventListener('aperture:assist-clear', clearUiHandler);
+  window.addEventListener('aperture:assist-clarification', clarificationHandler);
   updateStateDisplay(AssistState.IDLE);
 }
 
@@ -84,6 +87,7 @@ function renderShell() {
             <li>READ MESSAGES — "read messages"</li>
             <li>SEARCH CONVERSATION — "search [query]"</li>
             <li>GO BACK — "go back"</li>
+            <li>CONFIRM / RETRY / CANCEL — say the command while reviewing an action</li>
           </ul>
         </details>
       </div>
@@ -224,6 +228,7 @@ function updateStateDisplay(state) {
     [AssistState.PROCESSING]: { icon: 'bi-hourglass-split', label: 'PROCESSING', desc: 'Processing your speech...', micClass: 'bi-hourglass-split' },
     [AssistState.UNDERSTANDING]: { icon: 'bi-cpu', label: 'UNDERSTANDING', desc: 'Understanding your request...', micClass: 'bi-cpu' },
     [AssistState.CHECKING_CONTACT]: { icon: 'bi-person-search', label: 'CHECKING CONTACT', desc: 'Finding the contact...', micClass: 'bi-person-search' },
+    [AssistState.CLARIFYING]: { icon: 'bi-person-check', label: 'CHOOSE RECIPIENT', desc: 'Please confirm who you meant', micClass: 'bi-person-check' },
     [AssistState.CONFIRMING]: { icon: 'bi-question-circle', label: 'CONFIRMING', desc: 'Please confirm this action', micClass: 'bi-question-circle' },
     [AssistState.EXECUTING]: { icon: 'bi-play-circle', label: 'EXECUTING', desc: 'Executing your request...', micClass: 'bi-play-circle' },
     [AssistState.SUCCESS]: { icon: 'bi-check-circle', label: 'SUCCESS', desc: 'Done!', micClass: 'bi-check-circle' },
@@ -235,7 +240,7 @@ function updateStateDisplay(state) {
   const info = stateInfo[state] || stateInfo[AssistState.IDLE];
   iconEl.innerHTML = `<i class="bi ${info.icon}"></i>`;
   labelEl.textContent = info.label;
-  if (state !== AssistState.CONFIRMING) descEl.textContent = info.desc;
+  descEl.textContent = info.desc;
   micIcon.className = `bi ${info.micClass}`;
 
   // Update state display class
@@ -282,18 +287,34 @@ function renderConfirmation() {
 
   // Render interpretation
   const interpEl = document.getElementById('interpretation-content');
-  interpEl.innerHTML = `
-    <div class="interpretation-row"><span class="interp-label">Action:</span> ${escapeHtml(command.intent || '')}</div>
-    ${command.recipient ? `<div class="interpretation-row"><span class="interp-label">Recipient:</span> ${escapeHtml(command.recipient.displayName || '')}</div>` : ''}
-    ${command.message ? `<div class="interpretation-row"><span class="interp-label">Message:</span> "${escapeHtml(command.message)}"</div>` : ''}
-    <div class="interpretation-row"><span class="interp-label">Intent confidence (rule-based):</span> ${Math.round((command.intentConfidence ?? command.confidence ?? 0) * 100)}%</div>
-    <div class="interpretation-row"><span class="interp-label">Recipient match score:</span> ${Math.round((command.recipientMatchScore ?? command.confidence ?? 0) * 100)}%</div>
-    <div class="interpretation-row"><span class="interp-label">Risk:</span> <span class="risk-badge risk-${(command.risk || '').toLowerCase()}">${escapeHtml(command.risk || '')}</span></div>
-    ${command.confidenceMethod ? `<div class="small text-muted mt-1">Scores are rule-based estimates, not calibrated probabilities.</div>` : ''}`;
+  const intentLabels = {
+    SEND_MESSAGE: 'Send message', CALL_CONTACT: 'Call contact', OPEN_CHAT: 'Open chat',
+    READ_MESSAGES: 'Read messages', SEARCH_CONVERSATION: 'Search conversation', GO_BACK: 'Go back',
+  };
+  const actionLabel = intentLabels[command.intent] || command.intent || 'Unknown action';
+  const isMessage = command.intent === 'SEND_MESSAGE';
+  const intentScore = Number(command.intentConfidence ?? command.confidence ?? 0);
+  const recipientScore = Number(command.recipientMatchScore ?? 0);
+  const risk = String(command.risk || 'unknown').toLowerCase();
+  const recipientName = command.recipient?.displayName || 'Not resolved';
+  const recipientUsername = command.recipient?.username || '';
+  const messageBody = typeof command.message === 'string' && command.message.length
+    ? command.message : 'Not applicable for this action';
 
-  // Render confirmation message
-  const spoken = command.spokenResponse || '';
-  msgEl.innerHTML = `<div class="spoken-response">${escapeHtml(spoken)}</div><div class="say-confirm text-muted small mt-1">Say "Confirm" or tap the button</div>`;
+  // Keep the review details together so the user can verify the exact action before execution.
+  interpEl.innerHTML = `
+    <div class="interpretation-row"><span class="interp-label">Action:</span> ${escapeHtml(actionLabel)}</div>
+    <div class="interpretation-row"><span class="interp-label">Recipient:</span> ${escapeHtml(recipientName)}</div>
+    ${recipientUsername ? `<div class="interpretation-row"><span class="interp-label">Username:</span> ${escapeHtml(recipientUsername)}</div>` : ''}
+    <div class="interpretation-row"><span class="interp-label">Message:</span> ${isMessage ? `&ldquo;${escapeHtml(messageBody)}&rdquo;` : 'Not applicable'}</div>
+    <div class="interpretation-row"><span class="interp-label">Intent confidence (rule-based):</span> ${Math.round(Math.max(0, Math.min(1, intentScore)) * 100)}%</div>
+    <div class="interpretation-row"><span class="interp-label">Recipient match score:</span> ${command.recipient ? `${Math.round(Math.max(0, Math.min(1, recipientScore)) * 100)}%` : 'Not applicable'}</div>
+    <div class="interpretation-row"><span class="interp-label">Risk:</span> <span class="risk-badge risk-${escapeHtml(risk)}">${escapeHtml(risk)}</span></div>
+    <div class="small text-muted">Scores are rule-based estimates, not calibrated probabilities.</div>`;
+
+  // Keep spoken and physical confirmation paths available together.
+  const spoken = command.spokenResponse || `Ready to ${actionLabel.toLowerCase()}.`;
+  msgEl.innerHTML = `<div class="spoken-response">${escapeHtml(spoken)}</div><div class="say-confirm text-muted small mt-1">Say &ldquo;Confirm&rdquo;, &ldquo;Retry&rdquo;, or &ldquo;Cancel&rdquo; — or use the buttons below.</div>`;
 
   // Render buttons
   const isCall = command.intent === 'CALL_CONTACT';
@@ -353,10 +374,47 @@ function showError(message) {
   });
 }
 
+
+/** Offer explicit recipient choices when similar contacts are detected. */
+function showClarificationOptions(data) {
+  const errorEl = document.getElementById('assist-error');
+  const msgEl = document.getElementById('assist-error-message');
+  const btnsEl = document.getElementById('assist-error-buttons');
+  const confirmEl = document.getElementById('assist-confirmation');
+  if (!errorEl || !msgEl || !btnsEl) return;
+  if (confirmEl) confirmEl.style.display = 'none';
+  errorEl.style.display = 'block';
+  msgEl.textContent = data?.spokenResponse || 'Several contacts sound similar. Choose the intended username; no action was taken.';
+  btnsEl.replaceChildren();
+  for (const option of (data?.clarificationOptions || [])) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn btn-outline-primary';
+    button.textContent = `${option.displayName} (@${option.username})`;
+    button.addEventListener('click', async () => {
+      btnsEl.querySelectorAll('button').forEach((item) => { item.disabled = true; });
+      errorEl.style.display = 'none';
+      clearAssistUi();
+      await assistController.submitTranscript(option.transcript);
+    });
+    btnsEl.appendChild(button);
+  }
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button';
+  cancelButton.className = 'btn btn-outline-danger';
+  cancelButton.textContent = 'CANCEL';
+  cancelButton.addEventListener('click', () => {
+    assistState.reset();
+    clearAssistUi();
+  });
+  btnsEl.appendChild(cancelButton);
+}
+
 /** Clean up. */
 export function destroyAssistPage() {
   if (stateUnsub) stateUnsub();
   if (clearUiHandler) window.removeEventListener('aperture:assist-clear', clearUiHandler);
+  if (clarificationHandler) window.removeEventListener('aperture:assist-clarification', clarificationHandler);
   assistController.cleanup();
 }
 

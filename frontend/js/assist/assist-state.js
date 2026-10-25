@@ -10,6 +10,7 @@ export const AssistState = {
   PROCESSING: 'PROCESSING',
   UNDERSTANDING: 'UNDERSTANDING',
   CHECKING_CONTACT: 'CHECKING_CONTACT',
+  CLARIFYING: 'CLARIFYING',
   CONFIRMING: 'CONFIRMING',
   EXECUTING: 'EXECUTING',
   SUCCESS: 'SUCCESS',
@@ -22,15 +23,16 @@ export const AssistState = {
 const transitions = {
   [AssistState.IDLE]: [AssistState.LISTENING, AssistState.ERROR],
   [AssistState.LISTENING]: [AssistState.PROCESSING, AssistState.IDLE, AssistState.ERROR],
-  [AssistState.PROCESSING]: [AssistState.UNDERSTANDING, AssistState.CHECKING_CONTACT, AssistState.CONFIRMING, AssistState.ERROR, AssistState.IDLE],
-  [AssistState.UNDERSTANDING]: [AssistState.CHECKING_CONTACT, AssistState.CONFIRMING, AssistState.ERROR, AssistState.IDLE],
-  [AssistState.CHECKING_CONTACT]: [AssistState.CONFIRMING, AssistState.RETRY, AssistState.ERROR, AssistState.IDLE],
+  [AssistState.PROCESSING]: [AssistState.UNDERSTANDING, AssistState.CHECKING_CONTACT, AssistState.CLARIFYING, AssistState.CONFIRMING, AssistState.ERROR, AssistState.IDLE],
+  [AssistState.UNDERSTANDING]: [AssistState.CHECKING_CONTACT, AssistState.CLARIFYING, AssistState.CONFIRMING, AssistState.ERROR, AssistState.IDLE],
+  [AssistState.CHECKING_CONTACT]: [AssistState.CLARIFYING, AssistState.CONFIRMING, AssistState.RETRY, AssistState.ERROR, AssistState.IDLE],
+  [AssistState.CLARIFYING]: [AssistState.PROCESSING, AssistState.CONFIRMING, AssistState.RETRY, AssistState.CANCELLED, AssistState.IDLE, AssistState.ERROR],
   [AssistState.CONFIRMING]: [AssistState.EXECUTING, AssistState.RETRY, AssistState.CANCELLED, AssistState.ERROR],
   [AssistState.EXECUTING]: [AssistState.SUCCESS, AssistState.ERROR],
   [AssistState.SUCCESS]: [AssistState.IDLE],
   [AssistState.RETRY]: [AssistState.LISTENING, AssistState.IDLE],
   [AssistState.CANCELLED]: [AssistState.IDLE],
-  [AssistState.ERROR]: [AssistState.IDLE, AssistState.RETRY, AssistState.CANCELLED],
+  [AssistState.ERROR]: [AssistState.IDLE, AssistState.RETRY, AssistState.CANCELLED, AssistState.PROCESSING],
 };
 
 let currentState = AssistState.IDLE;

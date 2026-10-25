@@ -107,6 +107,10 @@ async def test_valid_message_is_saved_pending_confirmation():
     assert response["intent"] == "SEND_MESSAGE"
     assert response["recipient"]["id"] == str(friend_id)
     assert response["message"] == "Hello there"
+    assert response["intentConfidence"] < 1.0
+    assert response["recipientMatchScore"] == 1.0
+    assert response["risk"] == "medium"
+    assert response["confidenceMethod"].startswith("rule-based")
     assert len(db.added) == 1
 
     command = db.added[0]
@@ -522,3 +526,24 @@ async def test_cleanup_notification_failures_do_not_undo_persisted_cancellation(
     assert len(attempts) == 3
     assert [event[1] for event in attempts].count("call.incoming") == 1
     assert [event[1] for event in attempts].count("call.ended") == 2
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_message_returns_recipient_choices_without_persisting():
+    owner_id = uuid.uuid4()
+    friends = [
+        Profile(id=uuid.uuid4(), username="shiv", display_name="Shiv", avatar_url=None, bio=None, created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc)),
+        Profile(id=uuid.uuid4(), username="shivratn", display_name="Shivratn", avatar_url=None, bio=None, created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc)),
+    ]
+    friendships = [SimpleNamespace(user_low_id=min(owner_id, friend.id, key=lambda value: value.int), user_high_id=max(owner_id, friend.id, key=lambda value: value.int)) for friend in friends]
+    db = FakeSession([FakeResult(friendships), FakeResult(friends)])
+    response = await submit_assist_command(
+        data=AssistCommandRequest(transcript="chat message Shiv Ratna hello"),
+        current_user={"id": str(owner_id)},
+        db=db,
+    )
+    assert response["state"] == "ERROR"
+    assert response["confirmationRequired"] is False
+    assert len(response["clarificationOptions"]) == 2
+    assert db.added == []
+    assert db.committed is False

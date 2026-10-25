@@ -48,9 +48,6 @@ def _command_expired(command: AssistCommand, now: datetime) -> bool:
 def _pending_response(
     command: AssistCommand,
     recipient: Profile,
-    *,
-    intent_confidence: float = 0.99,
-    recipient_match_score: float = 1.0,
 ) -> dict:
     recipient_name = recipient.display_name or recipient.username or "Unknown"
     if command.intent == "SEND_MESSAGE":
@@ -68,14 +65,18 @@ def _pending_response(
         "recipient": {
             "id": str(recipient.id),
             "displayName": recipient_name,
+            "username": recipient.username,
         },
         "message": command.message_content,
-        # These are rule-based/matching scores, not calibrated probabilities.
-        "confidence": round(min(intent_confidence, recipient_match_score), 3),
-        "intentConfidence": round(intent_confidence, 3),
-        "recipientMatchScore": round(recipient_match_score, 3),
-        "confidenceMethod": "rule_based_and_name_similarity",
-        "risk": "high",
+        # These are transparent heuristic scores, not calibrated probabilities.
+        "confidence": min(
+            getattr(command, "_intent_confidence", 0.99),
+            getattr(command, "_recipient_match_score", 1.0),
+        ),
+        "intentConfidence": getattr(command, "_intent_confidence", 0.99),
+        "recipientMatchScore": getattr(command, "_recipient_match_score", 1.0),
+        "confidenceMethod": "rule-based intent heuristic and edit-distance recipient similarity; not calibrated probabilities",
+        "risk": "high" if command.intent == "CALL_CONTACT" else "medium",
         "confirmationRequired": True,
         "spokenResponse": spoken,
     }
@@ -184,7 +185,19 @@ async def submit_assist_command(
             "recipient": None,
             "message": None,
             "confidence": 0.0,
-            "risk": "high",
+            "intentConfidence": 0.0,
+            "recipientMatchScore": 0.0,
+            "confidenceMethod": "No action parsed; no confidence score available",
+            "risk": "none",
+            "clarificationOptions": [
+                {
+                    "recipientId": str(option.recipient_id),
+                    "username": option.username,
+                    "displayName": option.display_name,
+                    "transcript": option.transcript,
+                }
+                for option in parsed.clarification_options
+            ],
             "confirmationRequired": False,
             "spokenResponse": parsed.clarification
             or "I couldn't understand that request. No action was taken.",
@@ -231,11 +244,9 @@ async def submit_assist_command(
             "spokenResponse": "I couldn't verify that friend. No action was taken.",
         }
 
-    return _pending_response(
-        command, recipient,
-        intent_confidence=command_data.intent_confidence,
-        recipient_match_score=command_data.recipient_match_score,
-    )
+    command._intent_confidence = command_data.intent_confidence
+    command._recipient_match_score = command_data.recipient_match_score
+    return _pending_response(command, recipient)
 
 
 async def _notify_incoming_call_or_cancel(
