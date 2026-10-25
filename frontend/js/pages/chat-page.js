@@ -39,6 +39,7 @@ import {
 import { searchUsers } from '../services/user-service.js';
 import { sendFriendRequest, acceptFriendRequest, rejectFriendRequest } from '../services/friend-service.js';
 import { startOutgoingCall } from '../webrtc/call-controller.js';
+import { audioController } from '../assist/audio-controller.js';
 
 
 let currentUser = null;
@@ -64,6 +65,8 @@ let explorerSenderId = 'all';
 let explorerDate = '';
 let explorerTab = 'messages';
 let explorerSearch = '';
+let voiceOpenChatHandler = null;
+let voiceReadMessagesHandler = null;
 
 const attachmentUrlCache = new Map();
 
@@ -206,6 +209,25 @@ export async function initChatPage(container) {
     .addEventListener('click', openNewChatSearch);
 
   await loadConversations();
+
+  voiceOpenChatHandler = (event) => openConversationByVoice(event.detail?.name);
+  voiceReadMessagesHandler = (event) => readActiveMessagesAloud(event.detail || {});
+  window.addEventListener('aperture:voice-open-chat', voiceOpenChatHandler);
+  window.addEventListener('aperture:voice-read-messages', voiceReadMessagesHandler);
+  window.__apertureChatGoBack = () => {
+    if (!activeConversationId) return false;
+    activeConversationId = null;
+    activePresence = null;
+    messagesLoadGeneration += 1;
+    const chatShell = document.querySelector('.chat-shell');
+    chatShell?.classList.remove('has-active-conversation');
+    // Force the mobile list/detail transition to recalculate after changing views.
+    if (chatShell) void chatShell.offsetWidth;
+    const chatArea = document.getElementById('chat-area');
+    if (chatArea) chatArea.innerHTML = `<div class="chat-welcome"><i class="bi bi-chat-dots"></i><h3>Select a conversation</h3><p>Choose a chat or use Voice Assist.</p></div>`;
+    renderConversationList();
+    return true;
+  };
 
   // Subscribe to real-time events.
   unsubscribeFns.push(
@@ -1550,6 +1572,122 @@ function renderFriendshipNotice(conversation) {
     </div>`;
 }
 
+/** Open the closest matching conversation from a spoken contact name without a confirmation step. */
+async function openConversationByVoice(spokenName) {
+  const query = normalizeVoiceContactName(spokenName);
+  if (!query) return;
+  if (!conversations.length) await loadConversations();
+
+  const candidates = conversations.map((conversation) => {
+    const displayName = String(conversation.type === 'group'
+      ? (conversation.name || conversation.participantName || '')
+      : (conversation.participantName || '')).trim();
+    const name = normalizeVoiceContactName(displayName);
+    return { conversation, displayName, name, score: voiceNameSimilarity(query, name) };
+  }).filter((item) => item.name);
+
+  candidates.sort((a, b) => b.score - a.score || a.displayName.localeCompare(b.displayName));
+  const best = candidates[0];
+  // Avoid opening an unrelated chat for a very poor recognition result.
+  if (!best || best.score < 0.62) {
+    window.dispatchEvent(new CustomEvent('aperture:voice-overlay-message', {
+      detail: { text: `I couldn't confidently match “${spokenName}” to a loaded chat. Try saying the contact name again.` },
+    }));
+    return;
+  }
+
+  // Navigation is intentionally confirmation-free: choose the highest-scoring loaded contact.
+  window.dispatchEvent(new CustomEvent('aperture:voice-overlay-message', {
+    detail: { text: `Opening ${best.displayName}. I matched “${spokenName}” to the closest contact.` },
+  }));
+  await openConversation(best.conversation.id);
+}
+
+function normalizeVoiceContactName(value) {
+  return String(value || '').toLowerCase().normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+}
+
+function voicePhoneticKey(value) {
+  return normalizeVoiceContactName(value).split(' ').map((word) => word
+    .replace(/^kn/, 'n')       // knight → night
+    .replace(/^wr/, 'r')       // write → rite
+    .replace(/^wh/, 'w')
+    .replace(/ph/g, 'f')
+    .replace(/ck/g, 'k')
+    .replace(/qu/g, 'kw'))
+    .join(' ');
+}
+
+function voiceEditDistance(a, b) {
+  const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i += 1) {
+    let diagonal = previous[0];
+    previous[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const old = previous[j];
+      previous[j] = Math.min(previous[j] + 1, previous[j - 1] + 1, diagonal + (a[i - 1] === b[j - 1] ? 0 : 1));
+      diagonal = old;
+    }
+  }
+  return previous[b.length];
+}
+
+function voiceNameSimilarity(query, candidate) {
+  if (query === candidate) return 1;
+  const queryPhonetic = voicePhoneticKey(query);
+  const candidatePhonetic = voicePhoneticKey(candidate);
+  if (queryPhonetic && queryPhonetic === candidatePhonetic) return 0.98;
+  const directDistance = voiceEditDistance(query, candidate);
+  const phoneticDistance = voiceEditDistance(queryPhonetic, candidatePhonetic);
+  const denominator = Math.max(query.length, candidate.length, 1);
+  const phoneticDenominator = Math.max(queryPhonetic.length, candidatePhonetic.length, 1);
+  return Math.max(1 - directDistance / denominator, 0.94 * (1 - phoneticDistance / phoneticDenominator));
+}
+
+/** Read selected loaded text messages from the open conversation aloud. */
+function readActiveMessagesAloud({ mode = 'default', limit = null } = {}) {
+  const conv = conversations.find((item) => String(item.id) === String(activeConversationId));
+  if (!conv) {
+    window.dispatchEvent(new CustomEvent('aperture:voice-overlay-message', { detail: { text: 'Open a conversation first, then say read messages.' } }));
+    return;
+  }
+
+  // `messages` is maintained in chronological order by mergeAndSortMessages.
+  const textMessages = messages.filter((message) => String(message.content || '').trim());
+  let selected;
+  let introduction;
+  const count = Number.isFinite(limit) ? Math.min(20, Math.max(1, Math.floor(limit))) : 5;
+
+  if (mode === 'recent') {
+    selected = textMessages.slice(-1);
+    introduction = 'The latest message';
+  } else if (mode === 'ascending') {
+    selected = textMessages.slice(0, count);
+    introduction = `The oldest ${selected.length} messages, oldest first`;
+  } else if (mode === 'descending') {
+    selected = textMessages.slice(-count).reverse();
+    introduction = `The latest ${selected.length} messages, newest first`;
+  } else {
+    // Preserve the existing bare “read messages” behavior: up to five recent
+    // messages in chronological order.
+    selected = textMessages.slice(-5);
+    introduction = 'Recent messages';
+  }
+
+  const readable = selected.map((message) => {
+    const mine = String(message.senderId) === String(currentUser?.id);
+    const sender = mine ? 'You' : (message.senderName || conv.participantName || conv.name || 'Contact');
+    return `${sender} says: ${String(message.content).trim()}`;
+  });
+  if (!readable.length) {
+    window.dispatchEvent(new CustomEvent('aperture:voice-overlay-message', { detail: { text: 'There are no text messages loaded to read.' } }));
+    return;
+  }
+  audioController.speak(`${introduction} in ${conv.name || conv.participantName || 'this chat'}. ${readable.join('. ')}`);
+}
+
 /** Open a conversation and load its messages. */
 async function openConversation(conversationId) {
   activeConversationId = conversationId;
@@ -1800,7 +1938,10 @@ async function openConversation(conversationId) {
         statusEl.textContent = conv.participantId ? 'Checking status…' : 'Status unavailable';
         const statusConversationId = String(conversationId);
 
-        if (conv.participantId) {
+        // Presence is intentionally restricted to accepted friends by the API.
+        // Avoid issuing a request for known non-friends, which correctly returns 403.
+        const canViewPresence = !relationshipStatus || relationshipStatus === 'friends';
+        if (conv.participantId && canViewPresence) {
           try {
             const presence = await getPresence(conv.participantId);
             // Ignore a slow response if the user switched conversations meanwhile.
@@ -1814,14 +1955,23 @@ async function openConversation(conversationId) {
               statusEl.setAttribute('aria-label', 'Status unavailable');
             }
           }
+        } else {
+          statusEl.textContent = 'Status unavailable';
+          statusEl.setAttribute('aria-label', 'Status unavailable');
         }
       }
 
+      // A voice command can be followed immediately by “go back”. Do not let
+      // this pending async open continue mutating the chat list after that.
+      if (String(activeConversationId) !== String(conversationId)) return;
       conv.unreadCount = 0;
       renderConversationList();
     }
 
   await loadMessages(conversationId);
+  // loadMessages is asynchronous; “go back” may have replaced the chat DOM while
+  // it was loading. Stop here instead of binding handlers to removed elements.
+  if (String(activeConversationId) !== String(conversationId)) return;
 
   document.getElementById('message-explorer-btn')?.addEventListener('click', () => {
     openMessageExplorer('all');
@@ -1879,7 +2029,7 @@ async function openConversation(conversationId) {
   const input = document.getElementById('message-input');
   const sendBtn = document.getElementById('send-btn');
 
-  sendBtn.addEventListener('click', handleSend);
+  sendBtn?.addEventListener('click', handleSend);
   const attachFileBtn = document.getElementById('attach-file-btn');
   const attachmentInput = document.getElementById('attachment-input');
 
@@ -1983,11 +2133,11 @@ async function openConversation(conversationId) {
     if (attachmentInput) attachmentInput.value = '';
   });
 
-  input.addEventListener('keydown', (e) => {
+  input?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   });
-  input.addEventListener('input', debounce(handleTyping, 400));
-  input.focus();
+  input?.addEventListener('input', debounce(handleTyping, 400));
+  input?.focus();
 }
 /** Display information about a group conversation. */
 function openGroupInfo(conversation) {
@@ -3616,6 +3766,11 @@ function hideTypingIndicator() {
 
 /** Clean up the chat page. */
 export function destroyChatPage() {
+  if (voiceOpenChatHandler) window.removeEventListener('aperture:voice-open-chat', voiceOpenChatHandler);
+  if (voiceReadMessagesHandler) window.removeEventListener('aperture:voice-read-messages', voiceReadMessagesHandler);
+  voiceOpenChatHandler = null;
+  voiceReadMessagesHandler = null;
+  window.__apertureChatGoBack = null;
   unsubscribeFns.forEach((fn) => fn());
   unsubscribeFns = [];
   if (presenceRefreshTimer) clearInterval(presenceRefreshTimer);
