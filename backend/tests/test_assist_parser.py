@@ -1,4 +1,4 @@
-﻿from types import SimpleNamespace
+from types import SimpleNamespace
 
 from app.services.assist_parser import parse_assist_transcript
 
@@ -66,10 +66,11 @@ def test_name_matching_ignores_inserted_spaces():
     assert result.command is not None
     assert result.command.recipient_id == "ishwar-id"
 
-def test_name_matching_tolerates_small_asr_distortion():
+def test_name_matching_requests_confirmation_for_lower_confidence_asr_distortion():
     result = parse_assist_transcript("call shivratana", NAME_FRIENDS)
-    assert result.command is not None
-    assert result.command.recipient_id == "shiv-id"
+    assert result.command is None
+    assert len(result.clarification_options) == 1
+    assert result.clarification_options[0].username == "shivratn"
 
 def test_fuzzy_name_matching_refuses_ambiguous_contacts():
     friends = NAME_FRIENDS + [SimpleNamespace(id="shiv-id-2", username="shivratna", display_name="shivratna")]
@@ -78,25 +79,75 @@ def test_fuzzy_name_matching_refuses_ambiguous_contacts():
     assert "More than one friend" in result.clarification
 
 
-def test_message_matches_asr_variant_and_preserves_body():
+def test_message_asr_variant_requires_recipient_choice_and_preserves_body():
     result = parse_assist_transcript("chat message shivratana hello there", NAME_FRIENDS)
+    assert result.command is None
+    assert len(result.clarification_options) == 1
+    assert result.clarification_options[0].username == "shivratn"
+    assert result.clarification_options[0].transcript == "chat message shivratn hello there"
+
+
+def test_message_does_not_silently_choose_short_contact_over_similar_long_username():
+    friends = [
+        SimpleNamespace(id="shiv-id", username="shiv", display_name="Shiv"),
+        SimpleNamespace(id="shivratn-id", username="shivratn", display_name="Shivratn"),
+    ]
+    result = parse_assist_transcript("chat message Shiv Ratna hello", friends)
+    assert result.command is None
+    assert "Choose the intended username" in result.clarification
+    assert {option.username for option in result.clarification_options} == {"shiv", "shivratn"}
+    assert {option.transcript for option in result.clarification_options} == {
+        "chat message shiv Ratna hello",
+        "chat message shivratn hello",
+    }
+
+
+def test_asr_name_variant_requires_choice_even_without_competing_contact():
+    friends = [SimpleNamespace(id="shivratn-id", username="shivratn", display_name="Shivratn")]
+    result = parse_assist_transcript("chat message shivratana hello", friends)
+    assert result.command is None
+    assert len(result.clarification_options) == 1
+    assert result.clarification_options[0].username == "shivratn"
+    assert result.clarification_options[0].transcript == "chat message shivratn hello"
+
+
+def test_username_with_inserted_spaces_matches_exactly():
+    friends = [SimpleNamespace(id="ishwar-id", username="ishwarsingh", display_name="Ishwar Singh")]
+    result = parse_assist_transcript("call ishwar singh", friends)
     assert result.command is not None
-    assert result.command.intent == "SEND_MESSAGE"
-    assert result.command.recipient_id == "shiv-id"
-    assert result.command.message == "hello there"
+    assert result.command.recipient_id == "ishwar-id"
+    assert result.command.recipient_match_score == 1.0
 
 
-def test_exact_name_has_higher_match_score_than_asr_variant():
-    exact = parse_assist_transcript("call ishwarsingh", NAME_FRIENDS)
-    asr = parse_assist_transcript("call ishwar singh", NAME_FRIENDS)
-    assert exact.command is not None and asr.command is not None
-    assert exact.command.recipient_id == asr.command.recipient_id == "ishwar-id"
-    assert exact.command.recipient_match_score >= asr.command.recipient_match_score
-    assert 0.0 <= asr.command.recipient_match_score <= 1.0
+def test_low_confidence_single_recipient_requires_explicit_choice():
+    friends = [SimpleNamespace(id="shivratn-id", username="shivratn", display_name="Shivratn")]
+    result = parse_assist_transcript("call shivratana", friends)
+    assert result.command is None
+    assert "no call was placed" in result.clarification.lower()
+    assert len(result.clarification_options) == 1
+    assert result.clarification_options[0].username == "shivratn"
 
-def test_message_confidence_scores_are_present_and_bounded():
-    friends = FRIENDS + [SimpleNamespace(id="shiv-id", username="shiv", display_name="Shiv")]
-    result = parse_assist_transcript("chat message Shiv hello", friends)
-    assert result.command is not None
-    assert result.command.intent_confidence == 0.99
-    assert 0.0 <= result.command.recipient_match_score <= 1.0
+
+def test_three_character_prefix_is_generic_and_requires_choice():
+    friends = [SimpleNamespace(id="contact-1", username="alexander", display_name="Alex")]
+    result = parse_assist_transcript("call ale", friends)
+    assert result.command is None
+    assert len(result.clarification_options) == 1
+    assert result.clarification_options[0].username == "alexander"
+
+
+def test_shorter_prefix_does_not_match():
+    friends = [SimpleNamespace(id="contact-1", username="alexander", display_name="Alexander")]
+    result = parse_assist_transcript("call al", friends)
+    assert result.command is None
+    assert not result.clarification_options
+
+
+def test_prefix_matching_asks_when_multiple_contacts_share_prefix():
+    friends = [
+        SimpleNamespace(id="contact-1", username="alexander", display_name="Alexander"),
+        SimpleNamespace(id="contact-2", username="alexandra", display_name="Alexandra"),
+    ]
+    result = parse_assist_transcript("call alex", friends)
+    assert result.command is None
+    assert len(result.clarification_options) == 2
