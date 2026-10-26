@@ -11,6 +11,7 @@ class ParsedAssistCommand:
     message: str | None = None
     intent_confidence: float = 0.99
     recipient_match_score: float = 1.0
+    call_type: str = "audio"
 
 
 @dataclass(frozen=True)
@@ -94,12 +95,12 @@ def _match_score(distance: int, alias: str) -> float:
     return round(max(0.0, 1.0 - distance / max(1, len(_compact(alias)))), 3)
 
 
-def _options(items: list[dict], intent: str, body_by_id: dict[str, str] | None = None) -> list[ClarificationOption]:
+def _options(items: list[dict], intent: str, body_by_id: dict[str, str] | None = None, call_type: str = "audio") -> list[ClarificationOption]:
     options = []
     for item in items:
         username = item["username"] or item["display"]
         if intent == "CALL_CONTACT":
-            transcript = f"call {username}"
+            transcript = f"{call_type} call {username}"
         else:
             body = (body_by_id or {}).get(str(item["id"]), "")
             transcript = f"chat message {username} {body}".strip()
@@ -115,13 +116,17 @@ def parse_assist_transcript(transcript: str, friends: Iterable[object]) -> Parse
         return ParseResult(None, "Please provide a valid request. No action was taken.")
 
     message_match = re.fullmatch(r"chat\s+message\s+(.+)", transcript, flags=re.IGNORECASE | re.DOTALL)
-    call_match = re.fullmatch(r"call\s+(.+)", transcript, flags=re.IGNORECASE | re.DOTALL)
+    call_match = re.fullmatch(r"(?:(video|audio)\s+)?call\s+(.+)", transcript, flags=re.IGNORECASE | re.DOTALL)
     if message_match:
         intent, remainder = "SEND_MESSAGE", message_match.group(1).strip()
     elif call_match:
-        intent, remainder = "CALL_CONTACT", call_match.group(1).strip()
+        intent, remainder = "CALL_CONTACT", call_match.group(2).strip()
+        call_type = (call_match.group(1) or "audio").casefold()
     else:
         return ParseResult(None, "I can help with 'call [friend's name]' or 'chat message [friend's name] [message]'. No action was taken.")
+
+    if intent != "CALL_CONTACT":
+        call_type = "audio"
 
     candidates = _friends(friends)
     if intent == "CALL_CONTACT":
@@ -143,12 +148,12 @@ def parse_assist_transcript(transcript: str, friends: Iterable[object]) -> Parse
                     best_by_id[str(item["id"])] = (distance, priority, item, alias)
         if len(best_by_id) != 1:
             choices = [row[2] for row in sorted(best_by_id.values(), key=lambda row: (row[0], row[1]))]
-            return ParseResult(None, "More than one friend matches that name. Choose the intended username below; no call was placed.", _options(choices, intent))
+            return ParseResult(None, "More than one friend matches that name. Choose the intended username below; no call was placed.", _options(choices, intent, call_type=call_type))
         distance, _, item, alias = next(iter(best_by_id.values()))
         score = _match_score(distance, alias)
         if score < 0.85:
-            return ParseResult(None, f"I may have heard {item['display']} ({item['username']}). Please confirm the contact; no call was placed.", _options([item], intent))
-        return ParseResult(ParsedAssistCommand(intent, item["id"], item["display"], intent_confidence=0.99, recipient_match_score=score), None)
+            return ParseResult(None, f"I may have heard {item['display']} ({item['username']}). Please confirm the contact; no call was placed.", _options([item], intent, call_type=call_type))
+        return ParseResult(ParsedAssistCommand(intent, item["id"], item["display"], intent_confidence=0.99, recipient_match_score=score, call_type=call_type), None)
 
     tokens = remainder.split()
     ranked = []

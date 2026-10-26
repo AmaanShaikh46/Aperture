@@ -14,10 +14,12 @@ let holdActive = false;
 let stateUnsub = null;
 let clearUiHandler = null;
 let clarificationHandler = null;
+let activeAssistTab = 'voice';
 
 /** Initialize the Assist page. */
 export function initAssistPage(container) {
   containerEl = container;
+  activeAssistTab = 'voice';
   renderShell();
   setupControls();
   setupStateListener();
@@ -32,6 +34,11 @@ export function initAssistPage(container) {
 function renderShell() {
   containerEl.innerHTML = `
     <div class="assist-page">
+      <nav class="assist-tabs" role="tablist" aria-label="Assist modes">
+        <button type="button" class="assist-tab active" id="assist-tab-voice" role="tab" aria-selected="true" aria-controls="assist-panel-voice" data-assist-tab="voice">Voice Assist</button>
+        <button type="button" class="assist-tab" id="assist-tab-video" role="tab" aria-selected="false" aria-controls="assist-panel-video" data-assist-tab="video">Video Assist</button>
+      </nav>
+      <section id="assist-panel-voice" role="tabpanel" aria-labelledby="assist-tab-voice">
       <div class="assist-header">
         <h2 class="h5 mb-1">Aperture Assist</h2>
         <p class="text-muted small mb-0">Voice-controlled assistant</p>
@@ -82,7 +89,7 @@ function renderShell() {
           <summary class="text-muted small">Supported Commands</summary>
           <ul class="small text-muted mt-2 mb-0">
             <li>SEND MESSAGE — "chat message [name] [message]"</li>
-            <li>CALL CONTACT — "call [name]"</li>
+            <li>CALL CONTACT — "call [name]", "audio call [name]", or "video call [name]"</li>
             <li>OPEN CHAT — "open chat [name]"</li>
             <li>READ MESSAGES — "read messages"</li>
             <li>SEARCH CONVERSATION — "search [query]"</li>
@@ -91,12 +98,30 @@ function renderShell() {
           </ul>
         </details>
       </div>
+      </section>
+      <section id="assist-panel-video" class="assist-video-placeholder" role="tabpanel" aria-labelledby="assist-tab-video" hidden aria-hidden="true"></section>
     </div>`;
 }
 
 /** Setup the mic control and mode toggle. */
 function setupControls() {
   const micBtn = document.getElementById('assist-mic-btn');
+  containerEl.querySelectorAll('[data-assist-tab]').forEach((button) => button.addEventListener('click', () => {
+    const tab = button.dataset.assistTab;
+    activeAssistTab = tab;
+    containerEl.querySelectorAll('[data-assist-tab]').forEach((item) => {
+      const selected = item.dataset.assistTab === tab;
+      item.classList.toggle('active', selected);
+      item.setAttribute('aria-selected', String(selected));
+      item.tabIndex = selected ? 0 : -1;
+    });
+    const voicePanel = containerEl.querySelector('#assist-panel-voice');
+    const videoPanel = containerEl.querySelector('#assist-panel-video');
+    voicePanel.hidden = tab !== 'voice';
+    videoPanel.hidden = tab !== 'video';
+    voicePanel.setAttribute('aria-hidden', String(tab !== 'voice'));
+    videoPanel.setAttribute('aria-hidden', String(tab !== 'video'));
+  }));
   const micIcon = document.getElementById('assist-mic-icon');
   const modeHoldBtn = document.getElementById('mode-hold');
   const modeContBtn = document.getElementById('mode-continuous');

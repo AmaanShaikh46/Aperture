@@ -41,6 +41,9 @@ export async function confirm() {
     }
     assistState.transition(AssistState.SUCCESS);
     if (result.spokenResponse) audioController.speak(result.spokenResponse);
+    if (result.callId) {
+      window.dispatchEvent(new CustomEvent('aperture:assist-call-created', { detail: result }));
+    }
     const callback = onResolvedCb;
     currentCommand = null;
     onResolvedCb = null;

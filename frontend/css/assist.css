@@ -5,7 +5,7 @@
 
 .assist-page {
   padding: 1rem;
-  max-width: 500px;
+  max-width: 760px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -303,4 +303,40 @@
 
 .assist-commands-help li {
   padding: 0.2rem 0;
+}
+
+/* Assist mode navigation: full-width tabs at the top, matching the app shell. */
+.assist-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: 100%;
+  margin: -0.25rem 0 0.25rem;
+  border-bottom: 1px solid var(--aperture-border, #343a40);
+}
+.assist-tab {
+  min-width: 0;
+  min-height: 42px;
+  padding: 0.65rem 0.75rem;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--aperture-text-muted, #adb5bd);
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+}
+.assist-tab:hover { color: var(--aperture-text, #f8f9fa); }
+.assist-tab.active {
+  color: var(--aperture-primary, #0d6efd);
+  border-bottom-color: var(--aperture-primary, #0d6efd);
+}
+.assist-tab:focus-visible { outline: 2px solid var(--aperture-primary, #0d6efd); outline-offset: -3px; }
+.assist-page [role="tabpanel"] { min-width: 0; }
+.assist-video-placeholder { min-height: 240px; width: 100%; }
+.assist-page { width: 100%; }
+@media (max-width: 480px) {
+  .assist-tabs { margin-left: -0.25rem; width: calc(100% + 0.5rem); }
+  .assist-tab { min-height: 44px; padding-inline: 0.4rem; font-size: 0.82rem; }
 }

@@ -151,3 +151,29 @@ def test_prefix_matching_asks_when_multiple_contacts_share_prefix():
     result = parse_assist_transcript("call alex", friends)
     assert result.command is None
     assert len(result.clarification_options) == 2
+
+
+def test_video_call_intent_preserves_video_type():
+    result = parse_assist_transcript("video call Sam", FRIENDS)
+    assert result.command is not None
+    assert result.command.intent == "CALL_CONTACT"
+    assert result.command.call_type == "video"
+    assert result.command.recipient_id == "friend-1"
+
+def test_audio_call_intent_preserves_audio_type():
+    result = parse_assist_transcript("audio call Sam", FRIENDS)
+    assert result.command is not None
+    assert result.command.call_type == "audio"
+
+
+def test_legacy_call_defaults_to_audio():
+    result = parse_assist_transcript("call Sam", FRIENDS)
+    assert result.command is not None
+    assert result.command.call_type == "audio"
+
+
+def test_video_call_clarification_preserves_requested_call_type():
+    result = parse_assist_transcript("video call shivratana", NAME_FRIENDS)
+    assert result.command is None
+    assert len(result.clarification_options) == 1
+    assert result.clarification_options[0].transcript.startswith("video call ")

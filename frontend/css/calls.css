@@ -263,3 +263,8 @@
 .call-notice[data-variant="secondary"] { background: #374151; }
 .call-notice[data-variant="success"] { background: #166534; }
 .call-notice[hidden] { display: none; }
+
+/* Audio calls can reveal a video surface if either participant enables a camera. */
+.audio-upgrade-media { width: min(100%, 760px); margin-inline: auto; }
+.audio-upgrade-media[hidden] { display: none !important; }
+#call-overlay #camera-btn:disabled { opacity: 0.65; cursor: wait; }

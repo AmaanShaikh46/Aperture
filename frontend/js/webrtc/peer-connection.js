@@ -83,6 +83,17 @@ export async function createAnswer() {
   return answer;
 }
 
+
+/** Add a local track to an established peer connection (used for camera activation). */
+export function addLocalTrack(track, stream) {
+  if (!pc) throw new Error('No peer connection.');
+  if (!track || !stream) throw new Error('A valid local video track is required.');
+  const existing = pc.getSenders().find((sender) => sender.track?.kind === track.kind);
+  if (existing) return existing.replaceTrack(track);
+  pc.addTrack(track, stream);
+  return null;
+}
+
 /** Set the remote SDP description (offer or answer). */
 export async function setRemoteDescription(description) {
   if (!pc) throw new Error('No peer connection.');
@@ -143,6 +154,7 @@ export default {
   createPeerConnection,
   createOffer,
   createAnswer,
+  addLocalTrack,
   setRemoteDescription,
   addIceCandidate,
   getRemoteStream,

@@ -761,7 +761,13 @@ async def confirm_assist_command(
                 "intent": command.intent,
                 "callId": str(latest_call.id),
                 "status": latest_call.status,
-                "spokenResponse": f"Calling {recipient.display_name or recipient.username or 'your friend'}.",
+                "callType": latest_call.call_type,
+                "displayName": recipient.display_name or recipient.username or "Unknown contact",
+                "avatarUrl": recipient.avatar_url,
+                "spokenResponse": (
+                    f"{'Video' if latest_call.call_type == 'video' else 'Audio'} calling "
+                    f"{recipient.display_name or recipient.username or 'your friend'}."
+                ),
             }
 
         command.state = "failed"

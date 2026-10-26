@@ -10,12 +10,14 @@ import {
   createPeerConnection,
   createOffer,
   createAnswer,
+  addLocalTrack,
   setRemoteDescription,
   addIceCandidate,
   getRemoteStream,
   onRemoteTrack,
   onConnectionStateChange,
   closePeerConnection,
+  getPeerConnection,
 } from './peer-connection.js';
 import { mediaManager } from './media-manager.js';
 import { escapeHtml, getInitials, avatarColor } from '../utils.js';
@@ -29,6 +31,7 @@ let callTimer = null;
 let callStartedAt = null;
 let ringTimeout = null;
 let speakerEnabled = true;
+let assistCallHandler = null;
 
 function notify(message, variant = 'warning') {
   let notice = document.getElementById('aperture-call-notice');
@@ -79,7 +82,7 @@ function renderOutgoing() {
     <section class="call-screen outgoing-call" role="dialog" aria-modal="true" aria-label="Outgoing call">
       <div class="call-avatar" style="background-color:${color}">${escapeHtml(initials)}</div>
       <div class="call-name-large">${escapeHtml(name)}</div>
-      <div class="call-status-text" id="call-status-text">Calling…</div>
+      <div class="call-status-text" id="call-status-text">${currentCall.callType === 'video' ? 'Video calling' : 'Audio calling'} ${escapeHtml(name)}…</div>
       <div class="call-actions">
         <button class="btn btn-danger call-end-btn" type="button" aria-label="Cancel call"><i class="bi bi-telephone-x"></i></button>
       </div>
@@ -120,7 +123,7 @@ function renderActive() {
          <video id="remote-video" class="remote-video" autoplay playsinline aria-label="Remote video"></video>
          <video id="local-video" class="local-video" autoplay muted playsinline aria-label="Your video"></video>
        </div>`
-    : `<audio id="remote-audio" class="remote-audio" autoplay playsinline></audio>`;
+    : `<audio id="remote-audio" class="remote-audio" autoplay playsinline></audio><div class="call-media video-call-media audio-upgrade-media" hidden><video id="remote-video" class="remote-video" autoplay playsinline aria-label="Remote video"></video><video id="local-video" class="local-video" autoplay muted playsinline aria-label="Your video"></video></div>`;
 
   const overlay = showOverlay(`
     <section class="call-screen active-call ${isVideo ? 'video-call-screen' : 'audio-call-screen'}" role="dialog" aria-modal="true" aria-label="Active call">
@@ -131,7 +134,7 @@ function renderActive() {
       ${mediaMarkup}
       <div class="call-controls">
         <button class="btn call-control-btn" id="mute-btn" type="button" aria-label="Mute microphone" aria-pressed="false"><i class="bi bi-mic-fill"></i></button>
-        ${isVideo ? '<button class="btn call-control-btn" id="camera-btn" type="button" aria-label="Turn camera off" aria-pressed="false"><i class="bi bi-camera-video-fill"></i></button>' : ''}
+        <button class="btn call-control-btn" id="camera-btn" type="button" aria-label="Turn camera on" aria-pressed="false"><i class="bi bi-camera-video-off-fill"></i></button>
         <button class="btn call-control-btn" id="speaker-btn" type="button" aria-label="Mute speaker" aria-pressed="false"><i class="bi bi-volume-up-fill"></i></button>
         <button class="btn btn-danger call-end-btn" type="button" aria-label="End call"><i class="bi bi-telephone-x-fill"></i></button>
       </div>
@@ -140,6 +143,9 @@ function renderActive() {
   const localStream = mediaManager.getStream();
   const localVideo = overlay.querySelector('#local-video');
   if (localVideo && localStream) localVideo.srcObject = localStream;
+  const cameraButton = overlay.querySelector('#camera-btn');
+  const cameraInitiallyOn = isVideo && Boolean(localStream?.getVideoTracks().length);
+  if (cameraButton && cameraInitiallyOn) { cameraButton.setAttribute('aria-pressed', 'true'); cameraButton.setAttribute('aria-label', 'Turn camera off'); cameraButton.innerHTML = '<i class="bi bi-camera-video-fill"></i>'; }
   attachRemoteStream(getRemoteStream());
   mediaManager.setSpeakerEnabled(speakerEnabled);
 
@@ -150,12 +156,49 @@ function renderActive() {
     if (button) button.innerHTML = muted ? '<i class="bi bi-mic-mute-fill"></i>' : '<i class="bi bi-mic-fill"></i>';
     button?.setAttribute('aria-label', muted ? 'Unmute microphone' : 'Mute microphone');
   });
-  overlay.querySelector('#camera-btn')?.addEventListener('click', () => {
-    const enabled = mediaManager.toggleVideo();
+  overlay.querySelector('#camera-btn')?.addEventListener('click', async () => {
     const button = overlay.querySelector('#camera-btn');
-    button?.setAttribute('aria-pressed', String(!enabled));
-    if (button) button.innerHTML = enabled ? '<i class="bi bi-camera-video-fill"></i>' : '<i class="bi bi-camera-video-off-fill"></i>';
-    button?.setAttribute('aria-label', enabled ? 'Turn camera off' : 'Turn camera on');
+    if (!button || !currentCall) return;
+    button.disabled = true;
+    try {
+      let enabled;
+      const stream = mediaManager.getStream();
+      const tracks = stream?.getVideoTracks() || [];
+      if (tracks.length) {
+        enabled = !tracks[0].enabled;
+        tracks.forEach((track) => { track.enabled = enabled; });
+      } else {
+        const peer = getPeerConnection();
+        if (!peer || peer.signalingState !== 'stable') throw new Error('Call negotiation is busy. Please try turning the camera on again.');
+        // Acquire only video so a camera permission failure never disrupts the active microphone.
+        const cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
+        const track = cameraStream.getVideoTracks()[0];
+        if (!track || !stream) throw new Error('The camera did not provide a usable video track.');
+        stream.addTrack(track);
+        await addLocalTrack(track, stream);
+        enabled = true;
+        const localVideoEl = document.querySelector('#call-overlay #local-video');
+        if (localVideoEl) localVideoEl.srcObject = stream;
+        const pc = getPeerConnection();
+        if (pc?.signalingState === 'stable') {
+          const offer = await createOffer();
+          requireSendResult(sendOffer(currentCall.id, offer), 'camera upgrade offer');
+        } else {
+          throw new Error('Call negotiation is busy. Please try turning the camera on again.');
+        }
+      }
+      const media = document.querySelector('#call-overlay .audio-upgrade-media');
+      const remoteHasVideo = Boolean(getRemoteStream()?.getVideoTracks().some((track) => track.readyState === 'live'));
+      if (media) media.hidden = !enabled && !remoteHasVideo;
+      button.setAttribute('aria-pressed', String(enabled));
+      button.innerHTML = enabled ? '<i class="bi bi-camera-video-fill"></i>' : '<i class="bi bi-camera-video-off-fill"></i>';
+      button.setAttribute('aria-label', enabled ? 'Turn camera off' : 'Turn camera on');
+    } catch (error) {
+      console.warn('[calls] Camera toggle failed:', error);
+      notify(error?.message || 'Could not enable the camera. Your audio call is still active.');
+    } finally {
+      button.disabled = false;
+    }
   });
   overlay.querySelector('#speaker-btn')?.addEventListener('click', () => {
     speakerEnabled = !speakerEnabled;
@@ -181,9 +224,14 @@ function formatDuration(seconds) {
 
 function attachRemoteStream(stream) {
   if (!stream) return;
-  const target = currentCall?.callType === 'video'
+  const hasRemoteVideo = stream.getVideoTracks().length > 0;
+  const target = (currentCall?.callType === 'video' || hasRemoteVideo)
     ? document.querySelector('#call-overlay #remote-video')
     : document.querySelector('#call-overlay #remote-audio');
+  const remoteAudio = document.querySelector('#call-overlay #remote-audio');
+  const upgradedMedia = document.querySelector('#call-overlay .audio-upgrade-media');
+  if (upgradedMedia && hasRemoteVideo) upgradedMedia.hidden = false;
+  if (hasRemoteVideo && remoteAudio) { remoteAudio.pause(); remoteAudio.srcObject = null; }
   if (!target) return;
   if (target.srcObject !== stream) target.srcObject = stream;
   target.volume = speakerEnabled ? 1 : 0;
@@ -331,6 +379,14 @@ async function onAccepted(payload) {
   renderActive();
   try {
     await preparePeer();
+    const localVideoTracks = mediaManager.getStream()?.getVideoTracks() || [];
+    const cameraEnabled = localVideoTracks.some((track) => track.enabled && track.readyState === 'live');
+    const cameraButton = document.querySelector('#call-overlay #camera-btn');
+    if (cameraButton) {
+      cameraButton.setAttribute('aria-pressed', String(cameraEnabled));
+      cameraButton.setAttribute('aria-label', cameraEnabled ? 'Turn camera off' : 'Turn camera on');
+      cameraButton.innerHTML = cameraEnabled ? '<i class="bi bi-camera-video-fill"></i>' : '<i class="bi bi-camera-video-off-fill"></i>';
+    }
     const offer = await createOffer();
     requireSendResult(sendOffer(currentCall.id, offer), 'offer');
   } catch (error) {
@@ -341,24 +397,34 @@ async function onAccepted(payload) {
 }
 
 async function onOffer(payload) {
-  if (!currentCall || currentCall.id !== payload?.callId || currentCall.role !== 'callee') return;
+  if (!currentCall || currentCall.id !== payload?.callId || currentCall.status !== 'accepted') return;
   try {
     await setRemoteDescription(payload.offer);
     const answer = await createAnswer();
     requireSendResult(sendAnswer(currentCall.id, answer), 'answer');
   } catch (error) {
     console.error('[calls] Could not process offer:', error);
+    const peer = getPeerConnection();
+    if (peer?.connectionState === 'connected') {
+      notify('The camera change could not be negotiated. Your existing call remains active.');
+      return;
+    }
     notify('Could not establish the call connection.');
     await finishCurrentCall(true);
   }
 }
 
 async function onAnswer(payload) {
-  if (!currentCall || currentCall.id !== payload?.callId || currentCall.role !== 'caller') return;
+  if (!currentCall || currentCall.id !== payload?.callId) return;
   try {
     await setRemoteDescription(payload.answer);
   } catch (error) {
     console.error('[calls] Could not process answer:', error);
+    const peer = getPeerConnection();
+    if (peer?.connectionState === 'connected') {
+      notify('The camera change could not be negotiated. Your existing call remains active.');
+      return;
+    }
     notify('Could not complete call negotiation.');
     await finishCurrentCall(true);
   }
@@ -460,6 +526,10 @@ function cleanupCall(refreshHistory) {
  * can receive the existing call.accepted event using the same call ID.
  */
 function attachExistingOutgoingCall(call) {
+  // The Assist API uses `callId` in its JSON response, while the regular
+  // call controller stores the identifier as `id`. Normalize at this boundary
+  // so confirmed Voice Assist calls enter the same lifecycle as regular calls.
+  if (call && !call.id && call.callId) call = { ...call, id: call.callId };
   if (!call?.id) throw new Error('Voice Assist did not return a call ID.');
   if (currentCall?.id === call.id) return true;
   if (currentCall || outgoingRequestPending) {
@@ -471,7 +541,7 @@ function attachExistingOutgoingCall(call) {
     id: call.id,
     role: 'caller',
     callType: call.callType === 'video' ? 'video' : 'audio',
-    displayName: call.displayName || 'Your friend',
+    displayName: call.displayName || call.recipient?.displayName || call.recipientName || 'Unknown contact',
     avatarUrl: call.avatarUrl || null,
     status: call.status || 'ringing',
   };
@@ -519,6 +589,12 @@ export function initializeCallRuntime() {
     else if (state === 'failed') status.textContent = 'Connection failed';
   });
 
+  assistCallHandler = (event) => {
+    try { attachExistingOutgoingCall(event.detail); }
+    catch (error) { console.error('[calls] Could not attach Voice Assist call:', error); notify(error.message || 'Could not open the call screen.'); }
+  };
+  window.addEventListener('aperture:assist-call-created', assistCallHandler);
+
   subscriptions = [
     eventRouter.on(EventTypes.CALL_INCOMING, onIncoming),
     eventRouter.on(EventTypes.CALL_ACCEPTED, onAccepted),
@@ -536,6 +612,8 @@ export async function destroyCallRuntime() {
   if (currentCall) await finishCurrentCall(false);
   subscriptions.forEach((unsubscribe) => unsubscribe());
   subscriptions = [];
+  if (assistCallHandler) window.removeEventListener('aperture:assist-call-created', assistCallHandler);
+  assistCallHandler = null;
   initialized = false;
 }
 
