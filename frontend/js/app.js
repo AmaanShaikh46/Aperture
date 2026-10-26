@@ -17,7 +17,7 @@ let voiceNavigationHistory = [];
 let voiceOverlayRecognitionActive = false;
 let voiceOverlayTranscript = '';
 let voiceOverlayRecognition = null;
-let voiceAssistEnabled = true;
+let voiceOverlayContinuousMode = false;
 
 /** App entry — called on DOMContentLoaded. */
 export async function startApp() {
@@ -113,7 +113,7 @@ function renderLayout() {
       <div class="aperture-voice-interpreted" id="aperture-voice-interpreted">Waiting for a command</div>
       <div class="aperture-voice-actions">
         <button type="button" class="btn btn-sm btn-primary" id="aperture-voice-listen"><i class="bi bi-mic-fill"></i><span>Listen</span></button>
-        <button type="button" class="btn btn-sm btn-outline-secondary" id="aperture-voice-pause"><i class="bi bi-pause-fill"></i><span>Pause</span></button>
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="aperture-voice-pause" aria-pressed="false" title="Toggle continuous listening"><i class="bi bi-arrow-repeat"></i><span>Continuous: Off</span></button>
         <button type="button" class="btn btn-sm btn-outline-danger" id="aperture-voice-cancel"><i class="bi bi-x-circle"></i><span>Stop speech</span></button>
       </div>
     </section>`;
@@ -230,77 +230,68 @@ function setupVoiceOverlay() {
   const launcher = document.getElementById('aperture-voice-launcher');
   if (!overlay || !listenBtn || !launcher) return;
 
-  try { voiceAssistEnabled = localStorage.getItem('apertureVoiceAssistEnabled') !== 'false'; } catch (_) { voiceAssistEnabled = true; }
-  updateVoiceAssistVisibility();
   launcher.addEventListener('click', () => {
-    if (!voiceAssistEnabled) return;
     overlay.hidden = !overlay.hidden;
     if (!overlay.hidden) transcriptEl.textContent = 'Say “open chat [name]”, “read messages”, or “go back”.';
-  });
-
-  function updateVoiceAssistVisibility() {
-    // When disabled in Profile, remove both the launcher and panel from the UI.
-    launcher.hidden = !voiceAssistEnabled;
-    if (!voiceAssistEnabled) overlay.hidden = true;
-    launcher.setAttribute('aria-label', 'Open Voice Assist');
-    launcher.title = 'Voice Assist';
-  }
-  function setVoiceAssistEnabled(enabled) {
-    voiceAssistEnabled = Boolean(enabled);
-    try { localStorage.setItem('apertureVoiceAssistEnabled', String(voiceAssistEnabled)); } catch (_) {}
-    if (!voiceAssistEnabled) {
-      stopOverlayRecognition();
-      audioController.stopSpeaking();
-      overlay.hidden = true;
-      statusEl.textContent = 'Voice Assist off';
-    } else {
-      // Enabling from Profile reveals the launcher; opening the panel is a separate user action.
-      overlay.hidden = true;
-      statusEl.textContent = 'Ready · Indian English';
-    }
-    updateVoiceAssistVisibility();
-  }
-  window.addEventListener('aperture:voice-assist-setting-changed', (event) => {
-    setVoiceAssistEnabled(Boolean(event.detail?.enabled));
   });
   window.addEventListener('aperture:voice-overlay-message', (event) => {
     if (event.detail?.text) transcriptEl.textContent = event.detail.text;
     statusEl.textContent = 'Ready · Indian English';
   });
-  minimizeBtn.addEventListener('click', () => { overlay.hidden = true; });
+  minimizeBtn.addEventListener('click', () => { overlay.hidden = true; stopOverlayRecognition(); statusEl.textContent = 'Paused'; });
   exitBtn.addEventListener('click', () => {
     stopOverlayRecognition();
+    audioController.stopSpeaking();
     overlay.hidden = true;
-    statusEl.textContent = 'Voice Assist closed';
+    voiceOverlayContinuousMode = false;
+    pauseBtn.setAttribute('aria-pressed', 'false');
+    pauseBtn.querySelector('span').textContent = 'Continuous: Off';
+    statusEl.textContent = 'Exited';
   });
   cancelBtn.addEventListener('click', () => {
     stopOverlayRecognition();
     audioController.stopSpeaking();
+    voiceOverlayContinuousMode = false;
+    pauseBtn.setAttribute('aria-pressed', 'false');
+    pauseBtn.querySelector('span').textContent = 'Continuous: Off';
     statusEl.textContent = 'Stopped';
     dotEl.classList.remove('is-listening');
   });
   pauseBtn.addEventListener('click', () => {
-    stopOverlayRecognition();
-    statusEl.textContent = 'Paused';
-    dotEl.classList.remove('is-listening');
-    listenBtn.querySelector('span').textContent = 'Resume';
+    voiceOverlayContinuousMode = !voiceOverlayContinuousMode;
+    pauseBtn.setAttribute('aria-pressed', String(voiceOverlayContinuousMode));
+    pauseBtn.classList.toggle('btn-primary', voiceOverlayContinuousMode);
+    pauseBtn.classList.toggle('btn-outline-secondary', !voiceOverlayContinuousMode);
+    pauseBtn.querySelector('span').textContent = `Continuous: ${voiceOverlayContinuousMode ? 'On' : 'Off'}`;
+    if (voiceOverlayContinuousMode) {
+      if (!startOverlayRecognition()) voiceOverlayContinuousMode = false;
+    } else {
+      stopOverlayRecognition();
+      statusEl.textContent = 'Ready · Indian English';
+    }
+    pauseBtn.setAttribute('aria-pressed', String(voiceOverlayContinuousMode));
+    pauseBtn.querySelector('span').textContent = `Continuous: ${voiceOverlayContinuousMode ? 'On' : 'Off'}`;
   });
   listenBtn.addEventListener('click', () => {
     if (voiceOverlayRecognitionActive) { stopOverlayRecognition(); statusEl.textContent = 'Paused'; return; }
+    voiceOverlayContinuousMode = false;
+    pauseBtn.setAttribute('aria-pressed', 'false');
+    pauseBtn.classList.remove('btn-primary');
+    pauseBtn.classList.add('btn-outline-secondary');
+    pauseBtn.querySelector('span').textContent = 'Continuous: Off';
+    startOverlayRecognition();
+  });
+
+  function startOverlayRecognition() {
     if (!audioController.isSpeechRecognitionAvailable()) {
       statusEl.textContent = 'Speech recognition unavailable';
       transcriptEl.textContent = 'Use a supported browser with microphone permission.';
-      return;
+      return false;
     }
-    voiceOverlayRecognitionActive = true;
-    statusEl.textContent = 'Listening · en-IN';
-    dotEl.classList.add('is-listening');
-    listenBtn.querySelector('span').textContent = 'Listening…';
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!voiceOverlayRecognition) {
       voiceOverlayRecognition = new SR();
       voiceOverlayRecognition.lang = 'en-IN';
-      voiceOverlayRecognition.continuous = false;
       voiceOverlayRecognition.interimResults = true;
       voiceOverlayRecognition.onresult = (event) => {
         let transcript = '';
@@ -308,22 +299,61 @@ function setupVoiceOverlay() {
         voiceOverlayTranscript = transcript.trim();
         if (voiceOverlayTranscript) transcriptEl.textContent = voiceOverlayTranscript;
         const result = event.results[event.results.length - 1];
-        if (result?.isFinal && voiceOverlayTranscript) handleOverlayVoiceCommand(voiceOverlayTranscript, statusEl, transcriptEl, interpretedEl);
+        if (result?.isFinal && voiceOverlayTranscript) {
+          const recognized = isSupportedOverlayCommand(voiceOverlayTranscript);
+          if (!recognized) {
+            interpretedEl.textContent = 'Ignored — command not recognized';
+            statusEl.textContent = voiceOverlayContinuousMode ? 'Continuous listening · waiting for a supported command' : 'Command not recognized';
+            if (!voiceOverlayContinuousMode) stopOverlayRecognition();
+            return;
+          }
+          // Stop before executing to avoid interpreting our own spoken feedback.
+          if (voiceOverlayContinuousMode) {
+            try { voiceOverlayRecognition.stop(); } catch (_) {}
+          }
+          handleOverlayVoiceCommand(voiceOverlayTranscript, statusEl, transcriptEl, interpretedEl);
+          if (!voiceOverlayContinuousMode) stopOverlayRecognition();
+        }
       };
       voiceOverlayRecognition.onerror = (event) => {
-        statusEl.textContent = event.error === 'not-allowed' ? 'Microphone permission denied' : 'Could not hear clearly';
+        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+          voiceOverlayContinuousMode = false;
+          statusEl.textContent = 'Microphone permission denied';
+          pauseBtn.setAttribute('aria-pressed', 'false');
+          pauseBtn.querySelector('span').textContent = 'Continuous: Off';
+          return;
+        }
+        if (event.error !== 'no-speech' && event.error !== 'aborted') statusEl.textContent = 'Could not hear clearly';
       };
       voiceOverlayRecognition.onend = () => {
         voiceOverlayRecognitionActive = false;
         dotEl.classList.remove('is-listening');
         listenBtn.querySelector('span').textContent = 'Listen';
-        if (statusEl.textContent.startsWith('Listening')) statusEl.textContent = 'Ready · Indian English';
+        if (voiceOverlayContinuousMode && !overlay.hidden) {
+          // Restart after a completed phrase; ignore unknown phrases before dispatching actions.
+          setTimeout(() => { if (voiceOverlayContinuousMode && !overlay.hidden) startOverlayRecognition(); }, 350);
+        } else if (statusEl.textContent.startsWith('Listening')) {
+          statusEl.textContent = 'Ready · Indian English';
+        }
       };
     }
-    try { voiceOverlayRecognition.start(); } catch (error) { voiceOverlayRecognitionActive = false; statusEl.textContent = 'Ready · Indian English'; }
-  });
+    voiceOverlayRecognition.continuous = voiceOverlayContinuousMode;
+    if (voiceOverlayRecognitionActive) return true;
+    voiceOverlayRecognitionActive = true;
+    statusEl.textContent = voiceOverlayContinuousMode ? 'Continuous listening · en-IN' : 'Listening · en-IN';
+    dotEl.classList.add('is-listening');
+    listenBtn.querySelector('span').textContent = 'Listening…';
+    try { voiceOverlayRecognition.start(); return true; }
+    catch (error) {
+      voiceOverlayRecognitionActive = false;
+      dotEl.classList.remove('is-listening');
+      statusEl.textContent = 'Ready · Indian English';
+      return false;
+    }
+  }
 
   function stopOverlayRecognition() {
+    voiceOverlayContinuousMode = false;
     voiceOverlayRecognitionActive = false;
     if (voiceOverlayRecognition) { try { voiceOverlayRecognition.stop(); } catch (_) {} }
     listenBtn.querySelector('span').textContent = 'Listen';
@@ -332,8 +362,15 @@ function setupVoiceOverlay() {
   window.__apertureStopVoiceOverlay = stopOverlayRecognition;
 }
 
-async function handleOverlayVoiceCommand(raw, statusEl, transcriptEl, interpretedEl) {
-  if (!voiceAssistEnabled) return;
+function isSupportedOverlayCommand(raw) {
+  const normalized = String(raw || '').toLowerCase().replace(/[.!?,]+/g, ' ').replace(/\s+/g, ' ').trim();
+  // Continuous mode accepts only known command shapes; arbitrary speech is ignored.
+  return /^(?:please\s+)?(?:open|show)\s+(?:the\s+)?chat\s+(?:with\s+)?[a-z0-9][a-z0-9 .'-]{0,79}$/.test(normalized)
+    || /^(?:please\s+)?read\s+(?:my\s+)?messages$/.test(normalized)
+    || /^(?:please\s+)?go\s+back$/.test(normalized);
+}
+
+function handleOverlayVoiceCommand(raw, statusEl, transcriptEl, interpretedEl) {
   const normalized = raw.toLowerCase().replace(/[.!?,]+/g, ' ').replace(/\s+/g, ' ').trim();
   const openMatch = normalized.match(/^(?:please\s+)?(?:open|show)\s+(?:the\s+)?chat\s+(?:with\s+)?(.+)$/);
   if (openMatch) {
@@ -351,19 +388,9 @@ async function handleOverlayVoiceCommand(raw, statusEl, transcriptEl, interprete
     return;
   }
   if (/^(?:please\s+)?go\s+back$/.test(normalized)) {
-    statusEl.textContent = 'Going back';
+    voiceGoBack();
     interpretedEl.textContent = 'Go back → previous view';
-    try {
-      await voiceGoBack();
-      // Keep the heard transcript for feedback, but don't leave a completed
-      // navigation looking permanently in progress in the floating panel.
-      statusEl.textContent = 'Ready · Indian English';
-      interpretedEl.textContent = 'Go back → completed';
-    } catch (error) {
-      console.error('[Voice Assist] Go back failed:', error);
-      statusEl.textContent = 'Could not go back';
-      interpretedEl.textContent = 'Go back failed';
-    }
+    statusEl.textContent = 'Going back';
     return;
   }
   interpretedEl.textContent = 'Command not recognized';
@@ -371,24 +398,11 @@ async function handleOverlayVoiceCommand(raw, statusEl, transcriptEl, interprete
   statusEl.textContent = 'Command not supported in quick overlay';
 }
 
-async function voiceGoBack() {
-  // On the Chats page, use the exact same route lifecycle as clicking the
-  // bottom Chats button. Re-initializing the page restores its full list,
-  // event handlers, layout classes, and responsive styles instead of manually
-  // rebuilding only the conversation-list DOM.
-  if (currentPage === 'chats') {
-    await navigateTo('chats');
-    return true;
-  }
-
+function voiceGoBack() {
+  if (typeof window.__apertureChatGoBack === 'function' && window.__apertureChatGoBack()) return;
   const previous = voiceNavigationHistory.pop();
-  if (previous) {
-    await navigateTo(previous);
-    return true;
-  }
-
-  await navigateTo('chats');
-  return true;
+  if (previous) navigateTo(previous);
+  else if (currentPage !== 'chats') navigateTo('chats');
 }
 
 /** Setup WebSocket connection and state indicator. */
