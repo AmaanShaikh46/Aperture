@@ -56,7 +56,8 @@ def _pending_response(
             f"{command.message_content}?"
         )
     else:
-        spoken = f"Call {recipient_name}?"
+        call_label = "video call" if command.call_type == "video" else "audio call"
+        spoken = f"Start a {call_label} with {recipient_name}?"
 
     return {
         "commandId": str(command.id),
@@ -68,6 +69,7 @@ def _pending_response(
             "username": recipient.username,
         },
         "message": command.message_content,
+        "callType": command.call_type if command.intent == "CALL_CONTACT" else None,
         # These are transparent heuristic scores, not calibrated probabilities.
         "confidence": min(
             getattr(command, "_intent_confidence", 0.99),
@@ -138,6 +140,7 @@ async def _existing_success(
             response.update({
                 "callId": str(call.id),
                 "status": call.status,
+                "callType": call.call_type,
                 "spokenResponse": "Your call has already been started.",
             })
 
@@ -211,6 +214,7 @@ async def submit_assist_command(
         owner_id=owner_id,
         transcript=data.transcript.strip(),
         intent=command_data.intent,
+        call_type=command_data.call_type if command_data.intent == "CALL_CONTACT" else "audio",
         state="pending_confirmation",
         recipient_id=recipient_id,
         message_content=command_data.message,
@@ -682,7 +686,7 @@ async def confirm_assist_command(
                 caller_id=owner_id,
                 callee_id=command.recipient_id,
                 assist_command_id=command.id,
-                call_type="audio",
+                call_type=command.call_type or "audio",
                 status="ringing",
             )
             db.add(call)

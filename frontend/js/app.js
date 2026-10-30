@@ -232,7 +232,7 @@ function setupVoiceOverlay() {
 
   launcher.addEventListener('click', () => {
     overlay.hidden = !overlay.hidden;
-    if (!overlay.hidden) transcriptEl.textContent = 'Say “open chat [name]”, “read messages”, or “go back”.';
+    if (!overlay.hidden) transcriptEl.textContent = 'Say “open chat [name]”, “read messages ascending 5”, “video call [name]”, or “go back”.';
   });
   window.addEventListener('aperture:voice-overlay-message', (event) => {
     if (event.detail?.text) transcriptEl.textContent = event.detail.text;
@@ -362,16 +362,44 @@ function setupVoiceOverlay() {
   window.__apertureStopVoiceOverlay = stopOverlayRecognition;
 }
 
+function normalizeOverlayTranscript(raw) {
+  return String(raw || '').toLowerCase().replace(/[.!?,]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Normalize spoken count words only in the count position of a read-messages
+ * command. This avoids changing ordinary message text or contact names.
+ */
+function normalizeReadMessagesTranscript(raw) {
+  const normalized = normalizeOverlayTranscript(raw);
+  const match = normalized.match(/^(please\s+)?read\s+(my\s+)?messages(?:\s+(ascending|descending)(?:\s+(one|two|to|too|\d{1,2}))?)?$/);
+  if (!match) return normalized;
+
+  const spokenCounts = { one: '1', two: '2', to: '2', too: '2' };
+  const count = match[4] ? (spokenCounts[match[4]] || match[4]) : '';
+  return [
+    match[1] ? 'please' : '',
+    'read',
+    match[2] ? 'my' : '',
+    'messages',
+    match[3] || '',
+    count,
+  ].filter(Boolean).join(' ');
+}
+
 function isSupportedOverlayCommand(raw) {
-  const normalized = String(raw || '').toLowerCase().replace(/[.!?,]+/g, ' ').replace(/\s+/g, ' ').trim();
-  // Continuous mode accepts only known command shapes; arbitrary speech is ignored.
+  const normalized = normalizeReadMessagesTranscript(raw);
   return /^(?:please\s+)?(?:open|show)\s+(?:the\s+)?chat\s+(?:with\s+)?[a-z0-9][a-z0-9 .'-]{0,79}$/.test(normalized)
-    || /^(?:please\s+)?read\s+(?:my\s+)?messages$/.test(normalized)
+    || /^(?:please\s+)?read\s+(?:my\s+)?messages(?:\s+(?:ascending|descending)(?:\s+\d{1,2})?)?$/.test(normalized)
+    || /^(?:please\s+)?(?:call|audio\s+call|video\s+call)\s+[a-z0-9][a-z0-9 .'-]{0,79}$/.test(normalized)
+    || /^(?:please\s+)?(?:call\s+)?(?:audio|video)\s+call\s+[a-z0-9][a-z0-9 .'-]{0,79}$/.test(normalized)
     || /^(?:please\s+)?go\s+back$/.test(normalized);
 }
 
 function handleOverlayVoiceCommand(raw, statusEl, transcriptEl, interpretedEl) {
-  const normalized = raw.toLowerCase().replace(/[.!?,]+/g, ' ').replace(/\s+/g, ' ').trim();
+  // Use the same scoped number normalization for dispatch that command
+  // recognition uses, so "one", "two", "to", and "too" reach the reader.
+  const normalized = normalizeReadMessagesTranscript(raw);
   const openMatch = normalized.match(/^(?:please\s+)?(?:open|show)\s+(?:the\s+)?chat\s+(?:with\s+)?(.+)$/);
   if (openMatch) {
     const name = openMatch[1].trim();
@@ -381,12 +409,42 @@ function handleOverlayVoiceCommand(raw, statusEl, transcriptEl, interpretedEl) {
     if (currentPage !== 'chats') navigateTo('chats').then(open); else open();
     return;
   }
-  if (/^(?:please\s+)?read\s+(?:my\s+)?messages$/.test(normalized)) {
-    window.dispatchEvent(new CustomEvent('aperture:voice-read-messages'));
-    interpretedEl.textContent = 'Read messages aloud';
-    statusEl.textContent = 'Reading messages';
+
+  const readMatch = normalized.match(/^(?:please\s+)?read\s+(?:my\s+)?messages(?:\s+(ascending|descending)(?:\s+(\d{1,2}))?)?$/);
+  if (readMatch) {
+    const mode = readMatch[1] || 'default';
+    const limit = readMatch[2] ? Math.min(20, Math.max(1, Number(readMatch[2]))) : null;
+    const detail = { mode, limit };
+    const read = () => window.dispatchEvent(new CustomEvent('aperture:voice-read-messages', { detail }));
+    if (currentPage !== 'chats') {
+      statusEl.textContent = 'Open a chat to read messages';
+      interpretedEl.textContent = `Read messages · ${mode}`;
+      navigateTo('chats').then(() => {
+        transcriptEl.textContent = 'Choose a conversation, then say read messages again.';
+      });
+    } else {
+      read();
+      interpretedEl.textContent = mode === 'default' ? 'Read recent messages aloud' : `Read ${mode} messages${limit ? ` · ${limit}` : ''}`;
+      statusEl.textContent = 'Reading messages';
+    }
     return;
   }
+
+  const callMatch = normalized.match(/^(?:please\s+)?(?:(video|audio)\s+call|call\s+(?:(video|audio)\s+call\s+)?)(.+)$/);
+  if (callMatch) {
+    const callType = callMatch[1] || callMatch[2] || 'audio';
+    const recipient = (callMatch[3] || '').trim();
+    if (!recipient) return;
+    interpretedEl.textContent = `Request ${callType} call → ${recipient}`;
+    statusEl.textContent = 'Opening Voice Assist for confirmation';
+    const submit = () => window.dispatchEvent(new CustomEvent('aperture:assist-overlay-command', {
+      detail: { transcript: `${callType} call ${recipient}` },
+    }));
+    if (currentPage !== 'assist') navigateTo('assist').then(submit);
+    else submit();
+    return;
+  }
+
   if (/^(?:please\s+)?go\s+back$/.test(normalized)) {
     voiceGoBack();
     interpretedEl.textContent = 'Go back → previous view';
@@ -394,15 +452,16 @@ function handleOverlayVoiceCommand(raw, statusEl, transcriptEl, interpretedEl) {
     return;
   }
   interpretedEl.textContent = 'Command not recognized';
-  transcriptEl.textContent = `I heard “${raw}”. Supported here: open chat [name], read messages, or go back.`;
+  transcriptEl.textContent = `I heard “${raw}”. Try: open chat [name], read messages [ascending|descending] [number], call [name], audio call [name], video call [name], or go back.`;
   statusEl.textContent = 'Command not supported in quick overlay';
 }
 
 function voiceGoBack() {
-  if (typeof window.__apertureChatGoBack === 'function' && window.__apertureChatGoBack()) return;
-  const previous = voiceNavigationHistory.pop();
-  if (previous) navigateTo(previous);
-  else if (currentPage !== 'chats') navigateTo('chats');
+  // Match the user's explicit requirement: invoke the real Chats tab click
+  // handler instead of reconstructing the chat UI or traversing voice history.
+  voiceNavigationHistory = [];
+  const chatsTab = document.querySelector('.bottomnav-item[data-page="chats"]');
+  if (chatsTab) chatsTab.click();
 }
 
 /** Setup WebSocket connection and state indicator. */

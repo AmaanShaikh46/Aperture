@@ -214,21 +214,6 @@ export async function initChatPage(container) {
   voiceReadMessagesHandler = (event) => readActiveMessagesAloud(event.detail || {});
   window.addEventListener('aperture:voice-open-chat', voiceOpenChatHandler);
   window.addEventListener('aperture:voice-read-messages', voiceReadMessagesHandler);
-  window.__apertureChatGoBack = () => {
-    if (!activeConversationId) return false;
-    activeConversationId = null;
-    activePresence = null;
-    messagesLoadGeneration += 1;
-    const chatShell = document.querySelector('.chat-shell');
-    chatShell?.classList.remove('has-active-conversation');
-    // Force the mobile list/detail transition to recalculate after changing views.
-    if (chatShell) void chatShell.offsetWidth;
-    const chatArea = document.getElementById('chat-area');
-    if (chatArea) chatArea.innerHTML = `<div class="chat-welcome"><i class="bi bi-chat-dots"></i><h3>Select a conversation</h3><p>Choose a chat or use Voice Assist.</p></div>`;
-    renderConversationList();
-    return true;
-  };
-
   // Subscribe to real-time events.
   unsubscribeFns.push(
     eventRouter.on(EventTypes.MESSAGE_NEW, (incomingMessage) => {

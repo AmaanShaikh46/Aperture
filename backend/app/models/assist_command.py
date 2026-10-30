@@ -1,4 +1,4 @@
-﻿import uuid
+import uuid
 from datetime import datetime
 
 from sqlalchemy import DateTime, ForeignKey, Index, Text, func
@@ -22,6 +22,7 @@ class AssistCommand(Base):
     )
     transcript: Mapped[str] = mapped_column(Text, nullable=False)
     intent: Mapped[str] = mapped_column(Text, nullable=False)
+    call_type: Mapped[str] = mapped_column(Text, nullable=False, default="audio", server_default="audio")
     state: Mapped[str] = mapped_column(
         Text, nullable=False, default="pending_confirmation"
     )
