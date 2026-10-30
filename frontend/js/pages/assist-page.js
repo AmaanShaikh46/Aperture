@@ -15,6 +15,7 @@ let holdActive = false;
 let stateUnsub = null;
 let clearUiHandler = null;
 let clarificationHandler = null;
+let overlayCommandHandler = null;
 let activeAssistTab = 'voice';
 let videoAssistInitialized = false;
 
@@ -28,8 +29,13 @@ export function initAssistPage(container) {
   setupStateListener();
   clearUiHandler = () => clearAssistUi();
   clarificationHandler = (event) => showClarificationOptions(event.detail);
+  overlayCommandHandler = (event) => {
+    const transcript = String(event.detail?.transcript || '').trim();
+    if (transcript) void assistController.submitTranscript(transcript);
+  };
   window.addEventListener('aperture:assist-clear', clearUiHandler);
   window.addEventListener('aperture:assist-clarification', clarificationHandler);
+  window.addEventListener('aperture:assist-overlay-command', overlayCommandHandler);
   updateStateDisplay(AssistState.IDLE);
 }
 
@@ -330,7 +336,9 @@ function renderConfirmation() {
     SEND_MESSAGE: 'Send message', CALL_CONTACT: 'Call contact', OPEN_CHAT: 'Open chat',
     READ_MESSAGES: 'Read messages', SEARCH_CONVERSATION: 'Search conversation', GO_BACK: 'Go back',
   };
-  const actionLabel = intentLabels[command.intent] || command.intent || 'Unknown action';
+  const actionLabel = command.intent === 'CALL_CONTACT'
+    ? (command.callType === 'video' ? 'Video call' : 'Audio call')
+    : (intentLabels[command.intent] || command.intent || 'Unknown action');
   const isMessage = command.intent === 'SEND_MESSAGE';
   const intentScore = Number(command.intentConfidence ?? command.confidence ?? 0);
   const recipientScore = Number(command.recipientMatchScore ?? 0);
@@ -358,7 +366,7 @@ function renderConfirmation() {
   // Render buttons
   const isCall = command.intent === 'CALL_CONTACT';
   btnsEl.innerHTML = `
-    <button class="btn btn-success assist-confirm-btn" aria-label="Confirm action">${isCall ? 'CALL' : 'CONFIRM'}</button>
+    <button class="btn btn-success assist-confirm-btn" aria-label="Confirm action">${isCall ? (command.callType === 'video' ? 'VIDEO CALL' : 'AUDIO CALL') : 'CONFIRM'}</button>
     <button class="btn btn-outline-secondary assist-retry-btn" aria-label="Retry">RETRY</button>
     <button class="btn btn-outline-danger assist-cancel-btn" aria-label="Cancel">CANCEL</button>`;
 
@@ -454,6 +462,7 @@ export function destroyAssistPage() {
   if (stateUnsub) stateUnsub();
   if (clearUiHandler) window.removeEventListener('aperture:assist-clear', clearUiHandler);
   if (clarificationHandler) window.removeEventListener('aperture:assist-clarification', clarificationHandler);
+  if (overlayCommandHandler) window.removeEventListener('aperture:assist-overlay-command', overlayCommandHandler);
   videoAssistController.destroy();
   videoAssistInitialized = false;
   assistController.cleanup();
