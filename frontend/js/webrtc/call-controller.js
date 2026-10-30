@@ -5,12 +5,13 @@
 import { createCall, acceptCall, rejectCall, endCall } from '../services/call-service.js';
 import { eventRouter, EventTypes } from '../realtime/event-router.js';
 import { isWebSocketConnected, onWebSocketStateChange } from '../realtime/websocket-client.js';
-import { sendOffer, sendAnswer } from './signaling.js';
+import { sendOffer, sendAnswer, sendCallAssistMessage } from './signaling.js';
 import {
   createPeerConnection,
   createOffer,
   createAnswer,
   addLocalTrack,
+  replaceLocalVideoTrack,
   setRemoteDescription,
   addIceCandidate,
   getRemoteStream,
@@ -20,6 +21,7 @@ import {
   getPeerConnection,
 } from './peer-connection.js';
 import { mediaManager } from './media-manager.js';
+import { videoAssistController } from '../assist/video-assist-controller.js';
 import { escapeHtml, getInitials, avatarColor } from '../utils.js';
 
 let initialized = false;
@@ -32,6 +34,10 @@ let callStartedAt = null;
 let ringTimeout = null;
 let speakerEnabled = true;
 let assistCallHandler = null;
+let callAssistMode = false;
+let lastAssistMessageId = null;
+let lastAssistMessageText = '';
+const pendingAssistMessages = new Map();
 
 function notify(message, variant = 'warning') {
   let notice = document.getElementById('aperture-call-notice');
@@ -114,15 +120,35 @@ function renderActive() {
   if (!currentCall) return;
   clearInterval(callTimer);
   callStartedAt = Date.now();
+  callAssistMode = false;
+  lastAssistMessageId = null;
+  lastAssistMessageText = '';
   const name = displayName(currentCall);
   const color = avatarColor(name);
   const initials = getInitials(name);
   const isVideo = currentCall.callType === 'video';
   const mediaMarkup = isVideo
-    ? `<div class="call-media video-call-media">
-         <video id="remote-video" class="remote-video" autoplay playsinline aria-label="Remote video"></video>
-         <video id="local-video" class="local-video" autoplay muted playsinline aria-label="Your video"></video>
-       </div>`
+    ? `<div class="call-normal-view" data-call-normal-view>
+         <div class="call-media video-call-media">
+           <video id="remote-video" class="remote-video" autoplay playsinline aria-label="Remote video"></video>
+           <video id="local-video" class="local-video" autoplay muted playsinline aria-label="Your video"></video>
+         </div>
+       </div>
+       <section class="call-assist-view" data-call-assist-view hidden aria-label="Video Assist workspace">
+         <div class="call-assist-peer-preview">
+           <video id="assist-remote-video" autoplay muted playsinline aria-label="Other participant video"></video>
+           <span>Video call</span>
+         </div>
+         <div id="call-video-assist-root" class="call-video-assist-root"></div>
+       </section>
+       <section id="call-assist-received-message" class="call-assist-received-message" hidden aria-label="Last received sign message">
+         <div class="call-assist-message-heading">
+           <span><i class="bi bi-chat-square-text me-1"></i> Last sign message</span>
+           <span class="call-assist-message-status" data-call-assist-message-status aria-live="polite"></span>
+         </div>
+         <p id="call-assist-received-text" class="call-assist-received-text" aria-live="polite"></p>
+         <button type="button" class="btn btn-sm btn-outline-primary" id="call-assist-replay" aria-label="Speak the last sign message again"><i class="bi bi-volume-up me-1"></i> Speak again</button>
+       </section>`
     : `<audio id="remote-audio" class="remote-audio" autoplay playsinline></audio><div class="call-media video-call-media audio-upgrade-media" hidden><video id="remote-video" class="remote-video" autoplay playsinline aria-label="Remote video"></video><video id="local-video" class="local-video" autoplay muted playsinline aria-label="Your video"></video></div>`;
 
   const overlay = showOverlay(`
@@ -132,10 +158,12 @@ function renderActive() {
       <div class="call-status-text" id="call-status-text">Connecting…</div>
       <div class="call-timer" id="call-timer" aria-live="polite">00:00</div>
       ${mediaMarkup}
-      <div class="call-controls">
+      <div class="call-controls" aria-label="Call controls">
         <button class="btn call-control-btn" id="mute-btn" type="button" aria-label="Mute microphone" aria-pressed="false"><i class="bi bi-mic-fill"></i></button>
         <button class="btn call-control-btn" id="camera-btn" type="button" aria-label="Turn camera on" aria-pressed="false"><i class="bi bi-camera-video-off-fill"></i></button>
+        ${isVideo ? '<button class="btn call-control-btn" id="switch-camera-btn" type="button" aria-label="Switch camera" title="Switch camera" hidden><i class="bi bi-camera-reverse-fill"></i></button>' : ''}
         <button class="btn call-control-btn" id="speaker-btn" type="button" aria-label="Mute speaker" aria-pressed="false"><i class="bi bi-volume-up-fill"></i></button>
+        ${isVideo ? '<button class="btn call-control-btn call-assist-mode-btn" id="assist-mode-btn" type="button" aria-label="Enter Video Assist mode" aria-pressed="false"><i class="bi bi-hand-index-thumb"></i><span>Assist</span></button>' : ''}
         <button class="btn btn-danger call-end-btn" type="button" aria-label="End call"><i class="bi bi-telephone-x-fill"></i></button>
       </div>
     </section>`);
@@ -144,10 +172,25 @@ function renderActive() {
   const localVideo = overlay.querySelector('#local-video');
   if (localVideo && localStream) localVideo.srcObject = localStream;
   const cameraButton = overlay.querySelector('#camera-btn');
-  const cameraInitiallyOn = isVideo && Boolean(localStream?.getVideoTracks().length);
-  if (cameraButton && cameraInitiallyOn) { cameraButton.setAttribute('aria-pressed', 'true'); cameraButton.setAttribute('aria-label', 'Turn camera off'); cameraButton.innerHTML = '<i class="bi bi-camera-video-fill"></i>'; }
+  const cameraInitiallyOn = isVideo && Boolean(localStream?.getVideoTracks().some((track) => track.enabled && track.readyState === 'live'));
+  if (cameraButton && cameraInitiallyOn) {
+    cameraButton.setAttribute('aria-pressed', 'true');
+    cameraButton.setAttribute('aria-label', 'Turn camera off');
+    cameraButton.innerHTML = '<i class="bi bi-camera-video-fill"></i>';
+  }
   attachRemoteStream(getRemoteStream());
   mediaManager.setSpeakerEnabled(speakerEnabled);
+
+  if (isVideo) {
+    const assistRoot = overlay.querySelector('#call-video-assist-root');
+    videoAssistController.init(assistRoot, {
+      mode: 'call',
+      streamProvider: () => mediaManager.getStream(),
+      resetDraft: true,
+      onSendDraft: (text, options = {}) => sendAssistDraft(text, Boolean(options.speak)),
+    });
+    void refreshCameraSwitchButton();
+  }
 
   overlay.querySelector('#mute-btn')?.addEventListener('click', () => {
     const muted = mediaManager.toggleMute();
@@ -167,6 +210,10 @@ function renderActive() {
       if (tracks.length) {
         enabled = !tracks[0].enabled;
         tracks.forEach((track) => { track.enabled = enabled; });
+        if (!enabled && callAssistMode) {
+          videoAssistController.stop();
+          videoAssistController.setStatusMessage('Camera is off. Turn it on to resume sign recognition.', 'muted');
+        }
       } else {
         const peer = getPeerConnection();
         if (!peer || peer.signalingState !== 'stable') throw new Error('Call negotiation is busy. Please try turning the camera on again.');
@@ -193,6 +240,13 @@ function renderActive() {
       button.setAttribute('aria-pressed', String(enabled));
       button.innerHTML = enabled ? '<i class="bi bi-camera-video-fill"></i>' : '<i class="bi bi-camera-video-off-fill"></i>';
       button.setAttribute('aria-label', enabled ? 'Turn camera off' : 'Turn camera on');
+      if (currentCall?.callType === 'video') {
+        if (enabled && callAssistMode) {
+          videoAssistController.refreshStream();
+          videoAssistController.setStatusMessage('Camera is on. Start hands-free when you are ready.', 'muted');
+        }
+        void refreshCameraSwitchButton();
+      }
     } catch (error) {
       console.warn('[calls] Camera toggle failed:', error);
       notify(error?.message || 'Could not enable the camera. Your audio call is still active.');
@@ -200,6 +254,8 @@ function renderActive() {
       button.disabled = false;
     }
   });
+  overlay.querySelector('#switch-camera-btn')?.addEventListener('click', switchCamera);
+  overlay.querySelector('#assist-mode-btn')?.addEventListener('click', () => setCallAssistMode(!callAssistMode));
   overlay.querySelector('#speaker-btn')?.addEventListener('click', () => {
     speakerEnabled = !speakerEnabled;
     mediaManager.setSpeakerEnabled(speakerEnabled);
@@ -207,6 +263,14 @@ function renderActive() {
     button?.setAttribute('aria-pressed', String(!speakerEnabled));
     if (button) button.innerHTML = speakerEnabled ? '<i class="bi bi-volume-up-fill"></i>' : '<i class="bi bi-volume-mute-fill"></i>';
     button?.setAttribute('aria-label', speakerEnabled ? 'Mute speaker' : 'Unmute speaker');
+    if (!speakerEnabled && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+      const status = overlay.querySelector('[data-call-assist-message-status]');
+      if (status && lastAssistMessageText) status.textContent = 'Speaker muted · message remains visible';
+    }
+  });
+  overlay.querySelector('#call-assist-replay')?.addEventListener('click', () => {
+    if (lastAssistMessageText) speakReceivedAssistMessage(lastAssistMessageText, true);
   });
   overlay.querySelector('.call-end-btn')?.addEventListener('click', () => finishCurrentCall(true));
 
@@ -214,6 +278,211 @@ function renderActive() {
     const timer = document.querySelector('#call-overlay #call-timer');
     if (timer && callStartedAt) timer.textContent = formatDuration(Math.floor((Date.now() - callStartedAt) / 1000));
   }, 1000);
+}
+
+function createAssistMessageId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(bytes);
+  else for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.floor(Math.random() * 256);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((value) => value.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function sendAssistDraft(text, speak) {
+  if (!currentCall || currentCall.callType !== 'video' || currentCall.status !== 'accepted') {
+    return Promise.reject(new Error('Video Assist messages can only be sent during an active video call.'));
+  }
+  if (!isWebSocketConnected()) {
+    return Promise.reject(new Error('Realtime connection is unavailable. Reconnect before sending.'));
+  }
+
+  const callId = currentCall.id;
+  const messageId = createAssistMessageId();
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingAssistMessages.delete(messageId);
+      reject(new Error('Delivery confirmation timed out. Check whether the other participant received the message before sending it again.'));
+    }, 12_000);
+    pendingAssistMessages.set(messageId, { callId, resolve, reject, timeout });
+    try {
+      const sent = sendCallAssistMessage(callId, messageId, text, speak);
+      if (sent === false) throw new Error('Realtime connection was lost; could not send the sign message.');
+    } catch (error) {
+      clearTimeout(timeout);
+      pendingAssistMessages.delete(messageId);
+      reject(error);
+    }
+  });
+}
+
+function setCallAssistMode(enabled) {
+  if (!currentCall || currentCall.callType !== 'video') return;
+  callAssistMode = Boolean(enabled);
+  const overlay = document.getElementById('call-overlay');
+  const normalView = overlay?.querySelector('[data-call-normal-view]');
+  const assistView = overlay?.querySelector('[data-call-assist-view]');
+  const button = overlay?.querySelector('#assist-mode-btn');
+  if (normalView) normalView.hidden = callAssistMode;
+  if (assistView) assistView.hidden = !callAssistMode;
+  if (button) {
+    button.setAttribute('aria-pressed', String(callAssistMode));
+    button.setAttribute('aria-label', callAssistMode ? 'Return to normal video call' : 'Enter Video Assist mode');
+    button.innerHTML = callAssistMode
+      ? '<i class="bi bi-camera-video me-1"></i><span>Video call</span>'
+      : '<i class="bi bi-hand-index-thumb me-1"></i><span>Assist</span>';
+  }
+  videoAssistController.setVisible(callAssistMode);
+  if (callAssistMode) {
+    const cameraIsOn = mediaManager.getStream()?.getVideoTracks().some((track) => track.enabled && track.readyState === 'live');
+    if (!cameraIsOn) videoAssistController.setStatusMessage('Turn your camera on using the call controls before starting hands-free.', 'muted');
+  }
+}
+
+async function refreshCameraSwitchButton() {
+  const button = document.querySelector('#call-overlay #switch-camera-btn');
+  if (!button) return;
+  if (currentCall?.callType !== 'video' || !navigator.mediaDevices?.enumerateDevices) {
+    button.hidden = true;
+    return;
+  }
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cameras = devices.filter((device) => device.kind === 'videoinput' && device.deviceId);
+    button.hidden = cameras.length < 2;
+    button.disabled = cameras.length < 2;
+    if (cameras.length >= 2) button.title = `Switch camera (${cameras.length} available)`;
+  } catch (error) {
+    console.warn('[calls] Could not enumerate cameras:', error);
+    button.hidden = true;
+  }
+}
+
+async function switchCamera() {
+  const button = document.querySelector('#call-overlay #switch-camera-btn');
+  const stream = mediaManager.getStream();
+  const oldTrack = stream?.getVideoTracks()[0];
+  if (!button || !stream || !oldTrack || currentCall?.callType !== 'video') return;
+  const switchingCallId = currentCall.id;
+  button.disabled = true;
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    if (currentCall?.id !== switchingCallId) return;
+    const cameras = devices.filter((device) => device.kind === 'videoinput' && device.deviceId);
+    if (cameras.length < 2) {
+      button.hidden = true;
+      return;
+    }
+    const currentDeviceId = oldTrack.getSettings?.().deviceId || '';
+    const currentIndex = cameras.findIndex((device) => device.deviceId === currentDeviceId);
+    const nextIndex = currentIndex < 0 ? 1 : (currentIndex + 1) % cameras.length;
+    const nextDevice = cameras[nextIndex];
+    const replacementStream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        deviceId: { exact: nextDevice.deviceId },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      },
+    });
+    const newTrack = replacementStream.getVideoTracks()[0];
+    if (!newTrack) throw new Error('The selected camera did not provide a video track.');
+    if (currentCall?.id !== switchingCallId) { newTrack.stop(); return; }
+    newTrack.enabled = oldTrack.enabled;
+    try {
+      await replaceLocalVideoTrack(newTrack);
+      if (currentCall?.id !== switchingCallId) { newTrack.stop(); return; }
+    } catch (error) {
+      newTrack.stop();
+      throw error;
+    }
+    stream.removeTrack(oldTrack);
+    stream.addTrack(newTrack);
+    oldTrack.stop();
+    videoAssistController.refreshStream();
+    const localVideo = document.querySelector('#call-overlay #local-video');
+    if (localVideo) localVideo.srcObject = stream;
+    button.title = nextDevice.label || 'Switch camera';
+    notify(`Camera switched${nextDevice.label ? ` to ${nextDevice.label}` : ''}.`, 'success');
+  } catch (error) {
+    console.error('[calls] Camera switch failed:', error);
+    notify(error?.message || 'Could not switch cameras. Your current camera remains selected.');
+  } finally {
+    button.disabled = false;
+    void refreshCameraSwitchButton();
+  }
+}
+
+function speakReceivedAssistMessage(text, isReplay = false) {
+  const status = document.querySelector('#call-overlay [data-call-assist-message-status]');
+  if (!speakerEnabled) {
+    if (status) status.textContent = 'Unmute the speaker to play this message.';
+    return;
+  }
+  if (!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance === 'undefined') {
+    if (status) status.textContent = 'Speech is unavailable in this browser.';
+    return;
+  }
+  try {
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'en-IN';
+    utterance.onstart = () => { if (status) status.textContent = 'Speaking…'; };
+    utterance.onend = () => { if (status) status.textContent = 'Voice playback finished'; };
+    utterance.onerror = (event) => {
+      if (status) status.textContent = event?.error === 'not-allowed'
+        ? 'Tap “Speak again” to allow spoken playback.'
+        : 'Could not play speech. Tap “Speak again” to retry.';
+    };
+    window.speechSynthesis.speak(utterance);
+    if (status) status.textContent = isReplay ? 'Playing last message…' : 'Starting spoken playback…';
+  } catch (error) {
+    console.warn('[calls] Remote speech playback failed:', error);
+    if (status) status.textContent = 'Tap “Speak again” to retry spoken playback.';
+  }
+}
+
+function onCallAssistMessage(payload) {
+  if (!currentCall || currentCall.callType !== 'video' || payload?.callId !== currentCall.id) return;
+  const text = typeof payload.text === 'string' ? payload.text.trim() : '';
+  if (!text || text.length > 5000 || (payload.messageId && payload.messageId === lastAssistMessageId)) return;
+  lastAssistMessageId = payload.messageId || null;
+  lastAssistMessageText = text;
+  const card = document.querySelector('#call-overlay #call-assist-received-message');
+  const message = document.querySelector('#call-overlay #call-assist-received-text');
+  if (message) message.textContent = text;
+  if (card) card.hidden = false;
+  const status = document.querySelector('#call-overlay [data-call-assist-message-status]');
+  if (status) status.textContent = payload.speak ? 'Spoken message requested' : 'Text message';
+  if (payload.speak && speakerEnabled) speakReceivedAssistMessage(text);
+  else if (payload.speak && status) status.textContent = 'Message received · speaker is muted';
+}
+
+function onCallAssistMessageSent(payload) {
+  if (!currentCall || payload?.callId !== currentCall.id) return;
+  const pending = payload?.messageId ? pendingAssistMessages.get(payload.messageId) : null;
+  if (pending && pending.callId === payload.callId) {
+    clearTimeout(pending.timeout);
+    pendingAssistMessages.delete(payload.messageId);
+    pending.resolve(true);
+  }
+  videoAssistController.setStatusMessage('Message delivered to the other participant.', 'success');
+}
+
+function onCallAssistMessageError(payload) {
+  if (!currentCall) return;
+  if (payload?.callId && payload.callId !== currentCall.id) return;
+  const detail = payload?.detail || 'Could not send the sign message.';
+  const pending = payload?.messageId ? pendingAssistMessages.get(payload.messageId) : null;
+  if (pending && (!payload?.callId || pending.callId === payload.callId)) {
+    clearTimeout(pending.timeout);
+    pendingAssistMessages.delete(payload.messageId);
+    pending.reject(new Error(detail));
+  }
+  videoAssistController.setStatusMessage(detail, 'error');
+  notify(detail);
 }
 
 function formatDuration(seconds) {
@@ -225,23 +494,24 @@ function formatDuration(seconds) {
 function attachRemoteStream(stream) {
   if (!stream) return;
   const hasRemoteVideo = stream.getVideoTracks().length > 0;
-  const target = (currentCall?.callType === 'video' || hasRemoteVideo)
-    ? document.querySelector('#call-overlay #remote-video')
-    : document.querySelector('#call-overlay #remote-audio');
-  const remoteAudio = document.querySelector('#call-overlay #remote-audio');
+  const videoTargets = document.querySelectorAll('#call-overlay #remote-video, #call-overlay #assist-remote-video');
+  const audioTarget = document.querySelector('#call-overlay #remote-audio');
   const upgradedMedia = document.querySelector('#call-overlay .audio-upgrade-media');
   if (upgradedMedia && hasRemoteVideo) upgradedMedia.hidden = false;
-  if (hasRemoteVideo && remoteAudio) { remoteAudio.pause(); remoteAudio.srcObject = null; }
-  if (!target) return;
-  if (target.srcObject !== stream) target.srcObject = stream;
-  target.volume = speakerEnabled ? 1 : 0;
-  const playPromise = target.play?.();
-  if (playPromise?.catch) {
-    playPromise.catch(() => {
-      const status = document.querySelector('#call-overlay #call-status-text');
-      if (status) status.textContent = 'Connected. Tap the media area if audio does not start.';
-    });
-  }
+  if (hasRemoteVideo && audioTarget) { audioTarget.pause(); audioTarget.srcObject = null; }
+
+  const targets = hasRemoteVideo ? [...videoTargets] : [audioTarget].filter(Boolean);
+  targets.forEach((target) => {
+    if (target.srcObject !== stream) target.srcObject = stream;
+    target.volume = speakerEnabled ? 1 : 0;
+    const playPromise = target.play?.();
+    if (playPromise?.catch) {
+      playPromise.catch(() => {
+        const status = document.querySelector('#call-overlay #call-status-text');
+        if (status) status.textContent = 'Connected. Tap the media area if audio does not start.';
+      });
+    }
+  });
 }
 
 async function preparePeer() {
@@ -250,6 +520,15 @@ async function preparePeer() {
   await createPeerConnection(currentCall.id);
   const localVideo = document.querySelector('#call-overlay #local-video');
   if (localVideo) localVideo.srcObject = mediaManager.getStream();
+  const tracks = mediaManager.getStream()?.getVideoTracks() || [];
+  const cameraButton = document.querySelector('#call-overlay #camera-btn');
+  const cameraOn = tracks.some((track) => track.enabled && track.readyState === 'live');
+  if (cameraButton && currentCall.callType === 'video') {
+    cameraButton.setAttribute('aria-pressed', String(cameraOn));
+    cameraButton.setAttribute('aria-label', cameraOn ? 'Turn camera off' : 'Turn camera on');
+    cameraButton.innerHTML = cameraOn ? '<i class="bi bi-camera-video-fill"></i>' : '<i class="bi bi-camera-video-off-fill"></i>';
+  }
+  if (currentCall.callType === 'video') void refreshCameraSwitchButton();
 }
 
 function requireSendResult(result, label) {
@@ -387,6 +666,7 @@ async function onAccepted(payload) {
       cameraButton.setAttribute('aria-label', cameraEnabled ? 'Turn camera off' : 'Turn camera on');
       cameraButton.innerHTML = cameraEnabled ? '<i class="bi bi-camera-video-fill"></i>' : '<i class="bi bi-camera-video-off-fill"></i>';
     }
+    if (currentCall.callType === 'video') void refreshCameraSwitchButton();
     const offer = await createOffer();
     requireSendResult(sendOffer(currentCall.id, offer), 'offer');
   } catch (error) {
@@ -501,6 +781,16 @@ async function finishCurrentCall(notifyServer) {
 
 function cleanupCall(refreshHistory) {
   const overlay = document.getElementById('call-overlay');
+  pendingAssistMessages.forEach((pending) => {
+    clearTimeout(pending.timeout);
+    pending.reject(new Error('The call ended before message delivery was confirmed.'));
+  });
+  pendingAssistMessages.clear();
+  videoAssistController.destroy();
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  callAssistMode = false;
+  lastAssistMessageId = null;
+  lastAssistMessageText = '';
   clearTimeout(ringTimeout);
   ringTimeout = null;
   clearInterval(callTimer);
@@ -603,6 +893,9 @@ export function initializeCallRuntime() {
     eventRouter.on(EventTypes.CALL_OFFER, onOffer),
     eventRouter.on(EventTypes.CALL_ANSWER, onAnswer),
     eventRouter.on(EventTypes.CALL_ICE, onIceCandidate),
+    eventRouter.on(EventTypes.CALL_ASSIST_MESSAGE, onCallAssistMessage),
+    eventRouter.on(EventTypes.CALL_ASSIST_MESSAGE_SENT, onCallAssistMessageSent),
+    eventRouter.on(EventTypes.CALL_ASSIST_MESSAGE_ERROR, onCallAssistMessageError),
     eventRouter.on(EventTypes.CALL_ERROR, onCallError),
   ];
 }

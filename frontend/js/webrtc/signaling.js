@@ -21,6 +21,11 @@ export function sendIceCandidate(candidate, callId) {
   return sendSocketEvent(EventTypes.CALL_ICE, { candidate, callId });
 }
 
+/** Send a committed sign-language message to the other participant in an active video call. */
+export function sendCallAssistMessage(callId, messageId, text, speak = false) {
+  return sendSocketEvent(EventTypes.CALL_ASSIST_MESSAGE, { callId, messageId, text, speak: Boolean(speak) });
+}
+
 /** Send a call accept notification. */
 export function sendCallAccept(callId) {
   return sendSocketEvent(EventTypes.CALL_ACCEPT_SEND, { callId });
@@ -75,6 +80,7 @@ export const signaling = {
   sendOffer,
   sendAnswer,
   sendIceCandidate,
+  sendCallAssistMessage,
   sendCallAccept,
   sendCallReject,
   sendCallEnd,

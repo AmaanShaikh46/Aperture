@@ -268,3 +268,114 @@
 .audio-upgrade-media { width: min(100%, 760px); margin-inline: auto; }
 .audio-upgrade-media[hidden] { display: none !important; }
 #call-overlay #camera-btn:disabled { opacity: 0.65; cursor: wait; }
+
+
+/* In-call Video Assist mode. The normal WebRTC controls stay mounted in both views. */
+.call-screen.video-call-screen {
+  width: min(100%, 1160px);
+  max-width: min(100%, 1160px);
+  max-height: 100dvh;
+  overflow-y: auto;
+  justify-content: flex-start;
+  padding: clamp(0.75rem, 2vw, 1.5rem);
+  gap: 0.75rem;
+}
+
+.call-screen [hidden] { display: none !important; }
+.call-normal-view,
+.call-assist-view {
+  width: 100%;
+  min-width: 0;
+}
+.call-normal-view .call-media { margin: 0.25rem auto; }
+.call-assist-view {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: start;
+}
+.call-assist-peer-preview {
+  position: relative;
+  justify-self: end;
+  width: min(30%, 190px);
+  min-width: 112px;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border: 1px solid var(--aperture-border);
+  border-radius: 0.75rem;
+  background: #111827;
+}
+.call-assist-peer-preview video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.call-assist-peer-preview span {
+  position: absolute;
+  left: 0.35rem;
+  bottom: 0.25rem;
+  padding: 0.1rem 0.3rem;
+  border-radius: 0.25rem;
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  font-size: 0.68rem;
+}
+.call-video-assist-root { width: 100%; min-width: 0; }
+.call-video-assist-root .video-assist-card {
+  max-width: 100%;
+  padding: clamp(0.7rem, 1.8vw, 1rem);
+  text-align: left;
+}
+.call-video-assist-root .video-assist-preview { aspect-ratio: 16 / 10; }
+.call-video-assist-root .video-assist-actions > button { flex: 1 1 auto; }
+.call-video-assist-root .video-assist-send-actions .btn-success { flex: 1 1 180px; }
+.call-video-assist-root .video-assist-draft {
+  min-height: 3.3rem;
+  max-height: 7rem;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+.call-assist-received-message {
+  width: min(100%, 900px);
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--aperture-border);
+  border-left: 4px solid var(--aperture-primary);
+  border-radius: 0.8rem;
+  background: var(--aperture-surface);
+  text-align: left;
+}
+.call-assist-message-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+  color: var(--aperture-text-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+.call-assist-received-text {
+  margin: 0 0 0.6rem;
+  color: var(--aperture-text);
+  font-size: clamp(1.05rem, 2vw, 1.3rem);
+  font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.call-assist-message-status { font-weight: 500; }
+.call-controls { flex-wrap: wrap; justify-content: center; gap: clamp(0.45rem, 1.5vw, 1rem); }
+.call-assist-mode-btn { width: auto; min-width: 76px; padding-inline: 0.75rem; gap: 0.25rem; }
+.call-assist-mode-btn span { font-size: 0.75rem; font-weight: 700; }
+#call-overlay #switch-camera-btn[hidden] { display: none !important; }
+
+@media (max-width: 640px) {
+  .call-screen.video-call-screen { padding: 0.65rem; gap: 0.6rem; }
+  .call-screen.video-call-screen .call-media { width: 100%; }
+  .call-assist-peer-preview { width: 34%; }
+  .call-controls { margin-top: 0.5rem; gap: 0.4rem; }
+  .call-control-btn { width: 46px; height: 46px; font-size: 1.05rem; }
+  .call-assist-mode-btn { min-width: 68px; padding-inline: 0.45rem; }
+  .call-assist-received-message { padding: 0.7rem 0.8rem; }
+}

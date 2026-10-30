@@ -94,6 +94,16 @@ export function addLocalTrack(track, stream) {
   return null;
 }
 
+/** Replace the active local video sender's track without renegotiating the call. */
+export async function replaceLocalVideoTrack(track) {
+  if (!pc) throw new Error('No active peer connection.');
+  if (!track || track.kind !== 'video') throw new Error('A valid video track is required.');
+  const sender = pc.getSenders().find((item) => item.track?.kind === 'video');
+  if (!sender) throw new Error('The call does not currently have a video sender.');
+  await sender.replaceTrack(track);
+  return sender;
+}
+
 /** Set the remote SDP description (offer or answer). */
 export async function setRemoteDescription(description) {
   if (!pc) throw new Error('No peer connection.');
@@ -155,6 +165,7 @@ export default {
   createOffer,
   createAnswer,
   addLocalTrack,
+  replaceLocalVideoTrack,
   setRemoteDescription,
   addIceCandidate,
   getRemoteStream,

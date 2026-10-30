@@ -482,3 +482,10 @@
   white-space: pre-wrap;
 }
 .video-assist-recognition .btn:disabled { opacity: 0.55; }
+
+
+/* Rear-camera preview is not mirrored; front/selfie preview stays mirrored. */
+.video-assist-preview[data-mirrored="false"] .video-assist-video,
+.video-assist-preview[data-mirrored="false"] .video-assist-canvas {
+  transform: none;
+}

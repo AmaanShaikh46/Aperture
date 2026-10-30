@@ -27,16 +27,19 @@ class ConnectionManager:
             return True
         return False
 
-    async def send_to_user(self, user_id: str, message: dict):
+    async def send_to_user(self, user_id: str, message: dict) -> bool:
+        """Send to every active connection and report whether at least one received it."""
         connections = self.active_connections.get(user_id)
         if not connections:
-            return
+            return False
 
+        delivered = False
         # Snapshot before awaiting network I/O. The live set may change when
         # another connection disconnects while this method is suspended.
         for websocket in list(connections):
             try:
                 await websocket.send_json(message)
+                delivered = True
             except Exception:
                 logger.debug(
                     "Dropping an unavailable WebSocket for user %s",
@@ -44,6 +47,7 @@ class ConnectionManager:
                     exc_info=True,
                 )
                 self.disconnect(user_id, websocket)
+        return delivered
 
 
 manager = ConnectionManager()

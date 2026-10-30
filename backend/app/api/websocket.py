@@ -22,6 +22,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 MAX_WEBSOCKET_FRAME_BYTES = 64 * 1024
 MAX_MESSAGE_CHARACTERS = 10_000
+MAX_CALL_ASSIST_MESSAGE_CHARACTERS = 5_000
 PRESENCE_DISCONNECT_GRACE_SECONDS = 5
 _presence_disconnect_tasks: dict[str, asyncio.Task] = {}
 
@@ -121,6 +122,155 @@ async def _finish_calls_after_last_disconnect(user_id: str) -> None:
             await manager.send_to_user(target_user_id, event)
         except Exception:
             logger.exception("Could not notify peer after call disconnect")
+
+
+async def _send_call_assist_message_error(
+    websocket: WebSocket,
+    detail: str,
+    message_id: str | None = None,
+    call_id: str | None = None,
+) -> None:
+    try:
+        payload = {"detail": detail}
+        if message_id:
+            payload["messageId"] = message_id
+        if call_id:
+            payload["callId"] = call_id
+        await websocket.send_json({"type": "call.assist.message.error", "payload": payload})
+    except Exception:
+        pass
+
+
+async def _handle_call_assist_message(
+    websocket: WebSocket,
+    user_id: str,
+    payload: dict,
+) -> None:
+    """Authorize and relay a committed assist draft during an active video call."""
+    raw_call_id = payload.get("callId")
+    raw_message_id = payload.get("messageId")
+    try:
+        call_id = uuid.UUID(str(raw_call_id))
+        message_id = uuid.UUID(str(raw_message_id))
+    except (ValueError, TypeError, AttributeError):
+        await _send_call_assist_message_error(websocket, "Invalid call or message ID.")
+        return
+
+    text = payload.get("text")
+    if not isinstance(text, str):
+        await _send_call_assist_message_error(
+            websocket, "Message text must be a string.", str(message_id), str(call_id)
+        )
+        return
+    text = text.strip()
+    if not text:
+        await _send_call_assist_message_error(
+            websocket, "The message cannot be empty.", str(message_id), str(call_id)
+        )
+        return
+    if len(text) > MAX_CALL_ASSIST_MESSAGE_CHARACTERS:
+        await _send_call_assist_message_error(
+            websocket,
+            f"Sign messages cannot exceed {MAX_CALL_ASSIST_MESSAGE_CHARACTERS} characters.",
+            str(message_id),
+            str(call_id),
+        )
+        return
+
+    speak = payload.get("speak", False)
+    if not isinstance(speak, bool):
+        await _send_call_assist_message_error(
+            websocket, "The speak flag must be a boolean.", str(message_id), str(call_id)
+        )
+        return
+
+    sender_id = uuid.UUID(user_id)
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(CallSession).where(CallSession.id == call_id))
+            call = result.scalar_one_or_none()
+            if call is None or sender_id not in {call.caller_id, call.callee_id}:
+                await _send_call_assist_message_error(
+                    websocket, "Active video call not found.", str(message_id), str(call_id)
+                )
+                return
+
+            recipient_id = call.callee_id if sender_id == call.caller_id else call.caller_id
+            try:
+                await require_friends(db, sender_id, recipient_id)
+            except HTTPException as exc:
+                await _send_call_assist_message_error(
+                    websocket, str(exc.detail), str(message_id), str(call_id)
+                )
+                return
+
+            # Serialize message delivery against call termination and relationship
+            # changes, just as the WebRTC signaling path does.
+            locked_result = await db.execute(
+                select(CallSession).where(CallSession.id == call_id).with_for_update()
+            )
+            call = locked_result.scalar_one_or_none()
+            if (
+                call is None
+                or sender_id not in {call.caller_id, call.callee_id}
+                or call.status != "accepted"
+                or call.call_type != "video"
+            ):
+                await _send_call_assist_message_error(
+                    websocket,
+                    "Sign messages are available only during an active video call.",
+                    str(message_id),
+                    str(call_id),
+                )
+                return
+
+            recipient_id = call.callee_id if sender_id == call.caller_id else call.caller_id
+            created_at = datetime.now(timezone.utc).isoformat()
+            delivered = await asyncio.wait_for(
+                manager.send_to_user(
+                    str(recipient_id),
+                    {
+                        "type": "call.assist.message",
+                        "payload": {
+                            "callId": str(call.id),
+                            "messageId": str(message_id),
+                            "fromUserId": user_id,
+                            "text": text,
+                            "speak": speak,
+                            "createdAt": created_at,
+                        },
+                    },
+                ),
+                timeout=2.0,
+            )
+            if not delivered:
+                await _send_call_assist_message_error(
+                    websocket,
+                    "The other participant is temporarily unreachable. Please try again.",
+                    str(message_id),
+                    str(call_id),
+                )
+                return
+
+            # Release the call and friendship locks before acknowledging the sender.
+            await db.commit()
+
+        await websocket.send_json({
+            "type": "call.assist.message.sent",
+            "payload": {
+                "callId": str(call_id),
+                "messageId": str(message_id),
+                "createdAt": created_at,
+            },
+        })
+    except Exception:
+        logger.exception("Could not relay Video Assist message for call %s", call_id)
+        await _send_call_assist_message_error(
+            websocket,
+            "Could not send the sign message right now. Please retry.",
+            str(message_id),
+            str(call_id),
+        )
 
 
 async def _handle_call_signal(
@@ -343,6 +493,13 @@ async def websocket_endpoint(websocket: WebSocket):
                     await _send_call_error(websocket, "Call signaling payload must be a JSON object.")
                     continue
                 await _handle_call_signal(websocket, user_id, event_type, payload)
+                continue
+
+            if event_type == "call.assist.message":
+                if not isinstance(payload, dict):
+                    await _send_call_assist_message_error(websocket, "Sign-message payload must be a JSON object.")
+                    continue
+                await _handle_call_assist_message(websocket, user_id, payload)
                 continue
 
             if event_type != "message.send":

@@ -372,7 +372,11 @@ function normalizeOverlayTranscript(raw) {
  */
 function normalizeReadMessagesTranscript(raw) {
   const normalized = normalizeOverlayTranscript(raw);
-  const match = normalized.match(/^(please\s+)?read\s+(my\s+)?messages(?:\s+(ascending|descending)(?:\s+(one|two|to|too|\d{1,2}))?)?$/);
+    const corrected = normalized.replace(
+    /^((?:please\s+)?read\s+(?:my\s+)?messages)\s+as\s+sending\b/,
+    '$1 ascending'
+  );
+  const match = corrected.match(/^(please\s+)?read\s+(my\s+)?messages(?:\s+(ascending|descending)(?:\s+(one|two|to|too|\d{1,2}))?)?$/);
   if (!match) return normalized;
 
   const spokenCounts = { one: '1', two: '2', to: '2', too: '2' };
