@@ -340,3 +340,145 @@
   .assist-tabs { margin-left: -0.25rem; width: calc(100% + 0.5rem); }
   .assist-tab { min-height: 44px; padding-inline: 0.4rem; font-size: 0.82rem; }
 }
+
+
+/* Video Assist — browser-based hand-tracking milestone */
+.assist-video-placeholder {
+  min-height: 0;
+  width: 100%;
+}
+.video-assist-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  width: 100%;
+  padding: 1rem;
+  border: 1px solid var(--aperture-border);
+  border-radius: var(--aperture-radius);
+  background: var(--aperture-surface);
+  box-shadow: var(--aperture-shadow-sm);
+}
+.video-assist-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.video-assist-badge {
+  flex: 0 0 auto;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid var(--aperture-border);
+  border-radius: 999px;
+  color: var(--aperture-text-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.video-assist-note,
+.video-assist-footnote {
+  margin: 0;
+  color: var(--aperture-text-muted);
+  font-size: 0.875rem;
+}
+.video-assist-preview {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border-radius: calc(var(--aperture-radius) * 0.75);
+  background: #10151d;
+}
+.video-assist-video,
+.video-assist-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.video-assist-video {
+  transform: scaleX(-1);
+}
+.video-assist-canvas {
+  pointer-events: none;
+  transform: scaleX(-1);
+}
+.video-assist-camera-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  color: #d1d5db;
+  font-size: 0.9rem;
+  pointer-events: none;
+}
+.video-assist-camera-placeholder i {
+  font-size: 2rem;
+}
+.video-assist-preview.is-active .video-assist-camera-placeholder {
+  display: none;
+}
+.video-assist-status {
+  padding: 0.65rem 0.75rem;
+  border-radius: 0.5rem;
+  background: var(--aperture-bg, var(--aperture-surface));
+  font-size: 0.9rem;
+}
+.video-assist-status[data-status="success"] { color: #15803d; }
+.video-assist-status[data-status="error"] { color: #dc2626; }
+.video-assist-status[data-status="loading"] { color: #b45309; }
+.video-assist-detail { margin: -0.35rem 0 0; }
+.video-assist-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+.video-assist-actions .btn {
+  min-height: 44px;
+}
+@media (max-width: 480px) {
+  .video-assist-card { padding: 0.8rem; }
+  .video-assist-actions { flex-direction: column; }
+  .video-assist-actions .btn { width: 100%; }
+}
+
+/* Video Assist — recognition result and text composition */
+.video-assist-recognition {
+  padding: 0.9rem;
+  border: 1px solid var(--aperture-border);
+  border-radius: var(--aperture-radius);
+  background: var(--aperture-bg, var(--aperture-surface));
+}
+.video-assist-recognition-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  color: var(--aperture-text-muted);
+  font-size: 0.85rem;
+}
+.video-assist-recognition-heading strong {
+  color: var(--aperture-text, inherit);
+  font-size: 1.4rem;
+  letter-spacing: 0.04em;
+}
+.video-assist-confidence {
+  margin: 0.3rem 0 0.75rem;
+  color: var(--aperture-text-muted);
+  font-size: 0.8rem;
+}
+.video-assist-draft {
+  min-height: 3.25rem;
+  padding: 0.75rem;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--aperture-border);
+  border-radius: 0.5rem;
+  background: var(--aperture-surface);
+  white-space: pre-wrap;
+}
+.video-assist-recognition .btn:disabled { opacity: 0.55; }

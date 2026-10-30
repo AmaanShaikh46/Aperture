@@ -8,6 +8,7 @@ import { assistState, AssistState, onStateChange } from '../assist/assist-state.
 import { audioController } from '../assist/audio-controller.js';
 import { confirmationController } from '../assist/confirmation-controller.js';
 import { escapeHtml } from '../utils.js';
+import { videoAssistController } from '../assist/video-assist-controller.js';
 
 let containerEl = null;
 let holdActive = false;
@@ -15,11 +16,13 @@ let stateUnsub = null;
 let clearUiHandler = null;
 let clarificationHandler = null;
 let activeAssistTab = 'voice';
+let videoAssistInitialized = false;
 
 /** Initialize the Assist page. */
 export function initAssistPage(container) {
   containerEl = container;
   activeAssistTab = 'voice';
+  videoAssistInitialized = false;
   renderShell();
   setupControls();
   setupStateListener();
@@ -121,6 +124,17 @@ function setupControls() {
     videoPanel.hidden = tab !== 'video';
     voicePanel.setAttribute('aria-hidden', String(tab !== 'voice'));
     videoPanel.setAttribute('aria-hidden', String(tab !== 'video'));
+
+    // Initialize Video Assist lazily when its tab is first opened.
+    if (tab === 'video') {
+      if (!videoAssistInitialized) {
+        videoAssistController.init(videoPanel);
+        videoAssistInitialized = true;
+      }
+      videoAssistController.setVisible(true);
+    } else {
+      videoAssistController.setVisible(false);
+    }
   }));
   const micIcon = document.getElementById('assist-mic-icon');
   const modeHoldBtn = document.getElementById('mode-hold');
@@ -440,6 +454,8 @@ export function destroyAssistPage() {
   if (stateUnsub) stateUnsub();
   if (clearUiHandler) window.removeEventListener('aperture:assist-clear', clearUiHandler);
   if (clarificationHandler) window.removeEventListener('aperture:assist-clarification', clarificationHandler);
+  videoAssistController.destroy();
+  videoAssistInitialized = false;
   assistController.cleanup();
 }
 
