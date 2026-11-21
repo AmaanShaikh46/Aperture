@@ -18,7 +18,6 @@ The project demonstrates how a modern web frontend, authenticated backend APIs, 
 - [Technology Stack](#technology-stack)
 - [How Aperture Works](#how-aperture-works)
 - [Repository Structure](#repository-structure)
-- [Using the Live Demo](#using-the-live-demo)
 - [Running the Project Locally](#running-the-project-locally)
 - [Deployment](#deployment)
 - [Testing and Verification](#testing-and-verification)
@@ -211,9 +210,11 @@ Aperture combines real-time communication, messaging, calling, and accessibility
 ```text
 Aperture/
 ├── backend/
-│   ├── alembic/              # Database migration files
+│   ├── alembic/
+│   │   └── versions/         # Database schema migrations
 │   ├── app/
-│   │   ├── api/              # API and WebSocket routes
+│   │   ├── api/              # REST and WebSocket API routes
+│   │   │   └── v1/           # Versioned API routes
 │   │   ├── core/             # Configuration and authentication helpers
 │   │   ├── database/         # Database connection and session setup
 │   │   ├── models/           # Database models
@@ -224,20 +225,28 @@ Aperture/
 │   ├── requirements.txt
 │   └── alembic.ini
 ├── frontend/
-│   ├── css/                  # Stylesheets
+│   ├── css/                  # Application stylesheets
 │   ├── public/
 │   │   └── models/           # Browser-loaded sign-character model
 │   ├── js/
-│   │   ├── assist/           # Voice Assist, Video Assist, classifier, and hands-free controls
+│   │   ├── assist/           # Voice Assist, Video Assist, and recognition logic
 │   │   ├── pages/            # Page-level application code
 │   │   ├── realtime/         # WebSocket client and event routing
 │   │   ├── services/         # API and application services
 │   │   └── webrtc/           # Audio/video calling logic
+│   ├── tests/                # Frontend unit tests
 │   ├── app.html
-│   ├── login.html
-│   ├── register.html
+│   ├── assist.html
+│   ├── calls.html
+│   ├── contacts.html
+│   ├── profile.html
 │   ├── package.json
+│   ├── package-lock.json
 │   └── vite.config.js
+├── model_training/
+│   ├── tests/                # Model feature-pipeline tests
+│   ├── extract_image_dataset.py
+│   └── train_static_classifier.py
 ├── LICENSE
 └── README.md
 ```
@@ -390,7 +399,7 @@ These commands verify the automated backend tests and frontend compilation/build
 - Presence uses the backend process's in-memory WebSocket connection registry to determine who is online. A multi-worker or multi-instance deployment needs shared connection-state coordination for consistent presence across instances.
 - Voice Assist depends on browser Web Speech API support, microphone permission, and the speech-recognition and voice options available on the device.
 - Video Assist recognizes static A–Z and 1–9 character classes only; it is not a continuous ISL sentence translator, and its recognition accuracy has not been established as production-grade.
-- The friendship changes are prepared in the source code but are not active in the live demo until the database migration and backend/frontend deployments are completed.
+- The repository includes the friendship and friend-request implementation and its database migration. Whether these changes are active in the live demo depends on the production database migration and the deployed backend/frontend versions; repository source alone does not confirm the live deployment state.
 - The live demo uses hosted services with limited resources. Large uploads and repeated account creation should be avoided during evaluation.
 - Aperture is a student project and should not be treated as a production communication service for sensitive or critical conversations.
 
