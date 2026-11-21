@@ -1,6 +1,6 @@
 # Aperture
 
-**Aperture is a full-stack messaging and communication application built around accessible, user-controlled communication.** It brings direct and group messaging, one-to-one audio/video calls, friend requests, online presence, file attachments, and Voice Assist into one web application.
+**Aperture is a full-stack messaging and communication application built around accessible, user-controlled communication.** It brings direct and group messaging, one-to-one audio/video calls, friend requests, online presence, file attachments, Voice Assist, and Video Assist into one web application.
 
 The project demonstrates how a modern web frontend, authenticated backend APIs, a relational database, real-time events, browser-based media, and accessibility-oriented interaction can work together.
 
@@ -14,7 +14,7 @@ The project demonstrates how a modern web frontend, authenticated backend APIs, 
   - [Messaging and Conversations](#messaging-and-conversations)
   - [Audio and Video Calls](#audio-and-video-calls)
   - [Voice Assist](#voice-assist)
-  - [Video Assist: Planned Work](#video-assist-planned-work)
+  - [Video Assist](#video-assist)
 - [Technology Stack](#technology-stack)
 - [How Aperture Works](#how-aperture-works)
 - [Repository Structure](#repository-structure)
@@ -92,7 +92,7 @@ The sections below describe the functionality implemented in the project and how
 - **Call lifecycle:** The app supports incoming and outgoing call flows, including accepting, rejecting, cancelling, and ending calls.
 - **In-call controls:** Microphone and camera controls are available during calls.
 - **Call signalling:** WebSockets carry the signalling messages needed to coordinate calls.
-- **Network traversal:** STUN is used for connectivity discovery, and Metered TURN can be configured to relay media when a direct connection cannot be established.
+- **Network traversal:** Google STUN servers are retained for connectivity discovery. When `VITE_METERED_API_KEY` is configured, the client fetches temporary TURN credentials from Metered, validates the response, and adds the relay servers to the WebRTC connection. If the key is missing or the Metered request fails, the client falls back to STUN.
 - **Participant and relationship checks:** Call actions are checked by the backend for the relevant participants and relationship permissions.
 
 **How to try it:**
@@ -138,11 +138,24 @@ Speech-recognition availability and exact voice choices vary by browser and oper
 
 **Tips:** Use a browser with Web Speech API support, grant microphone permission when prompted, speak in a reasonably quiet environment, and check the recognized command before confirming consequential actions. Recognition and voice availability are browser-dependent.
 
-### Video Assist: Planned Work
+### Video Assist
 
-### Planned
+**Video Assist** is an implemented sign-character recognition prototype available from the Assist page and during one-to-one video calls. In a call, it can use the active call camera stream so a participant can compose a text message without leaving the conversation.
 
-- **Enhanced sign-language recognition:** Improve recognition of supported hand signs during video calls, with the goal of translating recognized signs into displayed text or interpreted sequences and making communication more accessible for sign-language users.
+Implemented capabilities include:
+
+- **Hand tracking:** MediaPipe Tasks Vision detects up to two hands and provides 21 landmarks per detected hand.
+- **Static character classification:** A TensorFlow Lite model, run through TensorFlow.js, classifies 35 labels: the letters A–Z and digits 1–9.
+- **Prediction stabilization:** Predictions are filtered over a five-frame history; a candidate must meet the confidence threshold and stability requirement before it is accepted.
+- **Manual character acceptance:** Users can accept a stable candidate and build a message draft.
+- **Hands-free composition:** A stable sign can be accepted automatically after being held. A neutral/no-hands interval allows the same character to be entered again.
+- **Draft editing:** Users can insert spaces, remove the last character, or clear the draft before sending.
+- **In-call messaging:** During an active video call, the composed text can be sent to the other participant. The call interface also supports sending the draft with spoken playback requested.
+- **Browser-side processing:** Camera frames and hand landmarks are processed in the browser; the feature is not a server-side video analysis service.
+
+**How to use Video Assist:** Open the Assist page and select Video Assist, or start/open Video Assist during a one-to-one video call. Start hand tracking or hands-free recognition, hold each supported character steady, briefly remove both hands before repeating the same character, edit the draft if needed, and send it when using the in-call interface.
+
+**Important limitation:** This is static character recognition for A–Z and 1–9, not continuous Indian Sign Language (ISL) sentence translation. It does not interpret full signing, grammar, facial expressions, or body movement. Recognition accuracy can vary with hand position, lighting, camera quality, and the model's training data.
 
 Aperture combines real-time communication, messaging, calling, and accessibility-focused interaction in one platform. Its design emphasizes inclusive communication, reliable contact selection, clear action confirmation, and user control.
 
@@ -155,7 +168,9 @@ Aperture combines real-time communication, messaging, calling, and accessibility
 - JavaScript using ES modules
 - Bootstrap and Bootstrap Icons
 - Vite for local development and production builds
-- Browser Web Speech API for the current Voice Assist implementation
+- Browser Web Speech API for Voice Assist speech recognition and synthesis
+- MediaPipe Tasks Vision for browser-based hand landmark detection in Video Assist
+- TensorFlow.js and TensorFlow Lite for static sign-character classification
 
 ### Backend
 
@@ -189,6 +204,7 @@ Aperture combines real-time communication, messaging, calling, and accessibility
 6. WebRTC carries audio/video between callers. STUN assists with network connectivity discovery, while TURN can relay media when a direct connection is unavailable.
 7. Uploaded media is stored in Supabase Storage rather than directly in PostgreSQL; the database stores related application metadata.
 8. Voice Assist uses browser speech APIs to recognize commands and speak responses, then invokes supported application actions through the frontend.
+9. Video Assist processes the local camera stream with MediaPipe Tasks Vision, passes hand-landmark features to the TensorFlow Lite classifier in the browser, and lets the user compose and send recognized characters during a video call.
 
 ## Repository Structure
 
@@ -209,8 +225,10 @@ Aperture/
 │   └── alembic.ini
 ├── frontend/
 │   ├── css/                  # Stylesheets
+│   ├── public/
+│   │   └── models/           # Browser-loaded sign-character model
 │   ├── js/
-│   │   ├── assist/           # Voice Assist interface and controllers
+│   │   ├── assist/           # Voice Assist, Video Assist, classifier, and hands-free controls
 │   │   ├── pages/            # Page-level application code
 │   │   ├── realtime/         # WebSocket client and event routing
 │   │   ├── services/         # API and application services
@@ -324,6 +342,7 @@ npm run build
 - Allow camera and microphone permissions when testing calls or voice input.
 - Test attachment uploads with small, non-sensitive files.
 - Try the supported Voice Assist commands and verify the profile enable/disable behavior.
+- Open Video Assist and test manual and hands-free character composition; during a video call, test sending the composed text to the other participant.
 - Check both the browser developer console and the backend terminal if a feature does not work.
 
 Local setup depends on environment variables, Supabase configuration and policies, database migrations, and browser permissions being configured correctly.
@@ -368,8 +387,9 @@ These commands verify the automated backend tests and frontend compilation/build
 
 - Audio/video calling currently supports one-to-one calls, not group calls.
 - Call quality and connection success depend on the browser, permissions, network, and TURN service availability.
-- User presence and the complete Voice Assist command flow are still being developed.
-- Video Assist hand-sign recognition has not yet been integrated into the main application.
+- Presence uses the backend process's in-memory WebSocket connection registry to determine who is online. A multi-worker or multi-instance deployment needs shared connection-state coordination for consistent presence across instances.
+- Voice Assist depends on browser Web Speech API support, microphone permission, and the speech-recognition and voice options available on the device.
+- Video Assist recognizes static A–Z and 1–9 character classes only; it is not a continuous ISL sentence translator, and its recognition accuracy has not been established as production-grade.
 - The friendship changes are prepared in the source code but are not active in the live demo until the database migration and backend/frontend deployments are completed.
 - The live demo uses hosted services with limited resources. Large uploads and repeated account creation should be avoided during evaluation.
 - Aperture is a student project and should not be treated as a production communication service for sensitive or critical conversations.
